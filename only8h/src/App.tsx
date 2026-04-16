@@ -43,7 +43,7 @@ export default function App() {
     <Layout user={user} currentPage={currentPage} onNavigate={setCurrentPage}>
       {currentPage === 'dashboard'    && <DashboardPage onNavigate={setCurrentPage} />}
       {currentPage === 'new-analysis' && <NewAnalysisPage user={user} />}
-      {currentPage === 'history'      && <HistoryPage />}
+      {currentPage === 'history'      && <HistoryPage user={user} />}
       {currentPage === 'settings'     && <SettingsPage user={user} />}
     </Layout>
   )

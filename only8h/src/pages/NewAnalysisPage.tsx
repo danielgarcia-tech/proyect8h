@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import type { DragEvent, ChangeEvent } from 'react'
+import type { DragEvent, ChangeEvent, FormEvent } from 'react'
 import {
   FileText,
   File,
@@ -14,12 +14,17 @@ import {
   Bell,
   FilePlus,
   ArrowRight,
+  Hash,
 } from 'lucide-react'
 import type { UploadedFile } from '../types'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
+import { extractTextFromFile } from '../lib/extractText'
+import { callAI } from '../lib/aiCalling'
 import { generatePdf } from '../lib/generatePdf'
 import type { ExtractionField, ReportConfig, AnalysisResult } from '../lib/generatePdf'
+import { DEFAULT_FIELDS, DEFAULT_SYSTEM_PROMPT, DEFAULT_AI_MODEL } from '../lib/aiDefaults'
+import { generateWord } from '../lib/generateWord'
 
 // ── Slots ─────────────────────────────────────────────────────────────────
 const DOC_SLOTS = [
@@ -57,6 +62,17 @@ const DOC_SLOTS = [
     tagText: '#B45309',
   },
   {
+    id: 'sac',
+    label: 'Reclamación SAC',
+    description: 'PDF de reclamación al Servicio de Atención al Cliente',
+    Icon: FilePlus,
+    color: '#059669',
+    lightBg: '#ECFDF5',
+    border: '#A7F3D0',
+    tag: '#D1FAE5',
+    tagText: '#065F46',
+  },
+  {
     id: 'otro',
     label: 'Otro documento',
     description: 'Documentación adicional',
@@ -72,37 +88,8 @@ const DOC_SLOTS = [
 type SlotId = typeof DOC_SLOTS[number]['id']
 interface SlotFile extends UploadedFile { slotId: SlotId }
 
-// Resultado simulado para demo — se reemplazará por la respuesta real de Claude
-const MOCK_RESULT: AnalysisResult = {
-  NIG:                    '28079470120240012345',
-  procedimiento:          'Juicio Verbal',
-  juzgado:                'Juzgado de 1.ª Instancia n.º 3 de Madrid',
-  numero_autos:           '456/2024',
-  dia_vista:              '2024-11-15',
-  telefono_incidencias:   '91 700 00 00',
-  tipo_vista:             'TELEMÁTICA',
-  demandante:             'Juan García López',
-  demandado:              'Entidad Financiera S.A.',
-  procurador:             'D.ª María Fernández Ruiz',
-  abogado:                'D. Carlos Martínez Pérez',
-  cuantia:                4823.50,
-  acciones_ejercitadas:   [
-    'Declarar la nulidad del contrato de tarjeta revolving por usura',
-    'Condenar a la restitución de 4.823,50 € cobrados en exceso',
-    'Declarar la nulidad de las cláusulas de interés y sistema revolving',
-    'Expresa condena en costas a la entidad demandada',
-  ],
-  inicio_acto:            'JUICIO',
-  excepciones_procesales: null,
-  hechos_controvertidos:  [
-    'El demandado niega que el tipo de interés sea usurario',
-    'Alega que el consumidor fue informado de las condiciones del contrato',
-    'Sostiene que la TAE estaba dentro de los límites del mercado en la fecha de suscripción',
-  ],
-  fecha_presentacion:     '2024-03-01',
-}
 
-type Step = 'upload' | 'processing' | 'result'
+type Step = 'upload' | 'processing' | 'review' | 'result'
 const STATUS_MESSAGES = [
   'Extrayendo texto de los documentos...',
   'Analizando cláusulas con IA...',
@@ -150,6 +137,84 @@ function Stepper({ step }: { step: Step }) {
         )
       })}
     </nav>
+  )
+}
+
+// ── Helper: nombre del dispositivo ────────────────────────────────────────
+function getDeviceName(): string {
+  const ua = navigator.userAgent
+  let os = 'Dispositivo'
+  if      (ua.includes('Windows')) os = 'Windows'
+  else if (ua.includes('Mac'))     os = 'macOS'
+  else if (ua.includes('Android')) os = 'Android'
+  else if (ua.includes('iPhone') || ua.includes('iPad')) os = 'iOS'
+  else if (ua.includes('Linux'))   os = 'Linux'
+  let browser = ''
+  if      (ua.includes('Edg'))                              browser = 'Edge'
+  else if (ua.includes('Chrome') && !ua.includes('Edg'))   browser = 'Chrome'
+  else if (ua.includes('Firefox'))                          browser = 'Firefox'
+  else if (ua.includes('Safari') && !ua.includes('Chrome')) browser = 'Safari'
+  return browser ? `${browser} / ${os}` : os
+}
+
+// ── Modal código Aranzadi ──────────────────────────────────────────────────
+function AranzadiModal({
+  onConfirm, onCancel,
+}: {
+  onConfirm: (codigo: string) => void
+  onCancel: () => void
+}) {
+  const [codigo, setCodigo] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => { inputRef.current?.focus() }, [])
+
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    const trimmed = codigo.trim()
+    if (trimmed) onConfirm(trimmed)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" onClick={onCancel} />
+
+      {/* Panel */}
+      <div className="relative w-full max-w-sm bg-white rounded-2xl shadow-2xl p-6 border border-gray-100">
+        {/* Icono */}
+        <div className="w-10 h-10 rounded-xl bg-[#EEF2FF] flex items-center justify-center mb-4">
+          <Hash className="w-5 h-5 text-[#2B58C4]" />
+        </div>
+
+        <h3 className="text-base font-bold text-gray-900 mb-1">Código Aranzadi</h3>
+        <p className="text-xs text-gray-400 mb-5">
+          Introduce el código del expediente. Quedará registrado en el historial de análisis.
+        </p>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <input
+            ref={inputRef}
+            type="text"
+            value={codigo}
+            onChange={(e) => setCodigo(e.target.value)}
+            placeholder="Ej. 28079470120240012345"
+            className="w-full text-sm px-3 py-2.5 rounded-xl border border-gray-200 bg-white placeholder-gray-300 text-gray-800 focus:outline-none focus:ring-2 focus:ring-[#2B58C4]/30 focus:border-[#2B58C4] transition font-mono"
+          />
+          <div className="flex gap-2.5">
+            <button type="button" onClick={onCancel}
+              className="flex-1 px-4 py-2.5 text-sm font-semibold text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-xl transition focus:outline-none">
+              Cancelar
+            </button>
+            <button type="submit" disabled={!codigo.trim()}
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-[#2B58C4] hover:bg-[#2348A8] disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition focus:outline-none focus:ring-2 focus:ring-[#2B58C4] focus:ring-offset-2">
+              Analizar
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   )
 }
 
@@ -270,8 +335,10 @@ function UploadStep({
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-4">
-        {DOC_SLOTS.map((slot) => (
-          <DocSlotCard key={slot.id} slot={slot} file={slotFiles[slot.id]} onFile={onFile} onRemove={onRemove} />
+        {DOC_SLOTS.map((slot, i) => (
+          <div key={slot.id} className={DOC_SLOTS.length % 2 !== 0 && i === DOC_SLOTS.length - 1 ? 'col-span-2' : ''}>
+            <DocSlotCard slot={slot} file={slotFiles[slot.id]} onFile={onFile} onRemove={onRemove} />
+          </div>
         ))}
       </div>
 
@@ -383,24 +450,206 @@ function ResultStep({
   )
 }
 
+// ── Modal de revisión post-análisis ───────────────────────────────────────
+type ReviewSection = 'procedimiento' | 'partes' | 'vista' | 'acciones' | 'excepcion' | 'hechos'
+
+const REVIEW_SECTIONS: { id: ReviewSection; label: string; icon: string }[] = [
+  { id: 'procedimiento', label: 'Procedimiento', icon: '⚖️' },
+  { id: 'partes',        label: 'Partes',        icon: '👥' },
+  { id: 'vista',         label: 'Vista',         icon: '🗓️' },
+  { id: 'acciones',      label: 'Acciones',      icon: '📋' },
+  { id: 'excepcion',     label: 'Excepción',     icon: '🛡️' },
+  { id: 'hechos',        label: 'Hechos',        icon: '📖' },
+]
+
+function toArr(v: unknown): string[] {
+  if (!v) return []
+  if (Array.isArray(v)) return v.map(String)
+  return [String(v)]
+}
+
+function ReviewField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="space-y-1">
+      <label className="block text-[10px] font-semibold uppercase tracking-wider text-gray-400">{label}</label>
+      <input type="text" value={value} onChange={(e) => onChange(e.target.value)}
+        className="w-full text-sm px-3 py-2 rounded-lg border border-gray-200 bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-[#2B58C4]/25 focus:border-[#2B58C4] transition" />
+    </div>
+  )
+}
+
+function ReviewSelect({ label, value, onChange, options }: {
+  label: string; value: string; onChange: (v: string) => void
+  options: { value: string; label: string }[]
+}) {
+  return (
+    <div className="space-y-1">
+      <label className="block text-[10px] font-semibold uppercase tracking-wider text-gray-400">{label}</label>
+      <select value={value} onChange={(e) => onChange(e.target.value)}
+        className="w-full text-sm px-3 py-2 rounded-lg border border-gray-200 bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-[#2B58C4]/25 focus:border-[#2B58C4] transition appearance-none">
+        <option value="">— Sin especificar —</option>
+        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    </div>
+  )
+}
+
+function ReviewList({ label, items, onChange, color }: {
+  label: string; items: string[]; onChange: (v: string[]) => void; color: string
+}) {
+  const update = (i: number, v: string) => { const n = [...items]; n[i] = v; onChange(n) }
+  const remove = (i: number) => onChange(items.filter((_, j) => j !== i))
+  const add    = () => onChange([...items, ''])
+  return (
+    <div className="space-y-2">
+      <label className="block text-[10px] font-semibold uppercase tracking-wider text-gray-400">{label}</label>
+      {items.map((item, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0" style={{ backgroundColor: color }}>{i+1}</span>
+          <input type="text" value={item} onChange={(e) => update(i, e.target.value)}
+            className="flex-1 text-sm px-3 py-2 rounded-lg border border-gray-200 bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-[#2B58C4]/25 focus:border-[#2B58C4] transition" />
+          <button onClick={() => remove(i)} className="p-1 text-gray-300 hover:text-red-400 rounded focus:outline-none"><X className="w-3.5 h-3.5" /></button>
+        </div>
+      ))}
+      <button onClick={add} className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-600 px-2 py-1 rounded-lg border border-dashed border-gray-200 hover:border-gray-300 transition w-full justify-center focus:outline-none">
+        <span className="text-base leading-none">+</span> Añadir
+      </button>
+    </div>
+  )
+}
+
+function ReviewModal({ data: initial, codigoAranzadi, onConfirm, onCancel }: {
+  data: AnalysisResult
+  codigoAranzadi: string
+  onConfirm: (data: AnalysisResult) => void
+  onCancel: () => void
+}) {
+  const [data, setData] = useState<Record<string, unknown>>({ ...initial })
+  const [active, setActive] = useState<ReviewSection>('procedimiento')
+  const g = (k: string) => String(data[k] ?? '')
+  const set = (k: string, v: unknown) => setData((p) => ({ ...p, [k]: v }))
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" />
+      <div className="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl flex flex-col max-h-[92vh]">
+
+        {/* Cabecera */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400">Revisión del análisis</p>
+            <p className="text-sm font-bold text-gray-900 font-mono">{codigoAranzadi}</p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={onCancel} className="px-4 py-2 text-sm font-semibold text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-xl transition focus:outline-none">Cancelar</button>
+            <button onClick={() => onConfirm(data as AnalysisResult)}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-[#2B58C4] hover:bg-[#2348A8] rounded-xl transition focus:outline-none">
+              <CheckCircle2 className="w-4 h-4" />Confirmar y guardar
+            </button>
+          </div>
+        </div>
+
+        {/* Tabs de sección */}
+        <div className="flex gap-1 px-4 pt-3 pb-0 flex-wrap">
+          {REVIEW_SECTIONS.map((s) => (
+            <button key={s.id} onClick={() => setActive(s.id)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition focus:outline-none ${
+                active === s.id ? 'bg-[#2B58C4] text-white' : 'text-gray-500 hover:bg-gray-100'
+              }`}>
+              <span>{s.icon}</span>{s.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Contenido sección */}
+        <div className="overflow-y-auto flex-1 px-6 py-5 space-y-4">
+
+          {active === 'procedimiento' && <>
+            <ReviewField label="NIG" value={g('NIG')} onChange={(v) => set('NIG', v)} />
+            <div className="grid grid-cols-2 gap-4">
+              <ReviewSelect label="Tipo de procedimiento" value={g('procedimiento')} onChange={(v) => set('procedimiento', v)}
+                options={[{value:'Juicio Verbal',label:'Juicio Verbal'},{value:'Juicio Ordinario',label:'Juicio Ordinario'},{value:'Monitorio',label:'Monitorio'},{value:'Cambiario',label:'Cambiario'}]} />
+              <ReviewField label="Número de autos" value={g('numero_autos')} onChange={(v) => set('numero_autos', v)} />
+            </div>
+            <ReviewField label="Juzgado competente" value={g('juzgado')} onChange={(v) => set('juzgado', v)} />
+            <div className="grid grid-cols-2 gap-4">
+              <ReviewField label="Cuantía (€)" value={g('cuantia')} onChange={(v) => set('cuantia', v)} />
+              <ReviewField label="Fecha presentación" value={g('fecha_presentacion')} onChange={(v) => set('fecha_presentacion', v)} />
+            </div>
+          </>}
+
+          {active === 'partes' && <>
+            <div className="grid grid-cols-2 gap-4">
+              <ReviewField label="Demandante" value={g('demandante')} onChange={(v) => set('demandante', v)} />
+              <ReviewField label="Demandado" value={g('demandado')} onChange={(v) => set('demandado', v)} />
+              <ReviewField label="Procurador" value={g('procurador')} onChange={(v) => set('procurador', v)} />
+              <ReviewField label="Abogado / Letrado" value={g('abogado')} onChange={(v) => set('abogado', v)} />
+            </div>
+          </>}
+
+          {active === 'vista' && <>
+            <div className="grid grid-cols-2 gap-4">
+              <ReviewField label="Día de vista (YYYY-MM-DD)" value={g('dia_vista')} onChange={(v) => set('dia_vista', v)} />
+              <ReviewSelect label="Tipo de vista" value={g('tipo_vista')} onChange={(v) => set('tipo_vista', v)}
+                options={[{value:'PRESENCIAL',label:'Presencial'},{value:'TELEMÁTICA',label:'Telemática'}]} />
+              <ReviewSelect label="Inicio del acto" value={g('inicio_acto')} onChange={(v) => set('inicio_acto', v)}
+                options={[{value:'AUDIENCIA_PREVIA',label:'Audiencia previa'},{value:'JUICIO',label:'Juicio'}]} />
+              <ReviewField label="Teléfono incidencias" value={g('telefono_incidencias')} onChange={(v) => set('telefono_incidencias', v)} />
+            </div>
+          </>}
+
+          {active === 'acciones' && (
+            <ReviewList label="Acciones ejercitadas (SOLICITO)" items={toArr(data['acciones_ejercitadas'])}
+              onChange={(v) => set('acciones_ejercitadas', v)} color="#059669" />
+          )}
+
+          {active === 'excepcion' && (
+            <div className="space-y-3">
+              <div className="flex items-start gap-3 p-3 rounded-xl bg-red-50 border border-red-100 text-xs text-red-700">
+                <span className="text-base">🛡️</span>
+                Excepciones procesales alegadas por el demandado. Si no hay, deja la lista vacía.
+              </div>
+              <ReviewList label="Excepciones procesales" items={toArr(data['excepciones_procesales'])}
+                onChange={(v) => set('excepciones_procesales', v.length ? v : null)} color="#DC2626" />
+            </div>
+          )}
+
+          {active === 'hechos' && (
+            <ReviewList label="Hechos controvertidos" items={toArr(data['hechos_controvertidos'])}
+              onChange={(v) => set('hechos_controvertidos', v)} color="#0891B2" />
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────
 export default function NewAnalysisPage({ user }: { user: User }) {
-  const [step,          setStep]          = useState<Step>('upload')
-  const [slotFiles,     setSlotFiles]     = useState<Partial<Record<SlotId, SlotFile>>>({})
-  const [progress,      setProgress]      = useState(0)
-  const [downloadError, setDownloadError] = useState<string | null>(null)
-  const [analysisResult,setAnalysisResult]= useState<AnalysisResult>(MOCK_RESULT)
-  const [aiFields,      setAiFields]      = useState<ExtractionField[]>([])
-  const [reportCfg,     setReportCfg]     = useState<ReportConfig | null>(null)
+  const [step,            setStep]            = useState<Step>('upload')
+  const [slotFiles,       setSlotFiles]       = useState<Partial<Record<SlotId, SlotFile>>>({})
+  const [progress,        setProgress]        = useState(0)
+  const [downloadError,   setDownloadError]   = useState<string | null>(null)
+  const [analysisError,   setAnalysisError]   = useState<string | null>(null)
+  const [analysisResult,  setAnalysisResult]  = useState<AnalysisResult | null>(null)
+  const [aiFields,        setAiFields]        = useState<ExtractionField[]>(DEFAULT_FIELDS)
+  const [aiModel,         setAiModel]         = useState(DEFAULT_AI_MODEL)
+  const [aiPrompt,        setAiPrompt]        = useState(DEFAULT_SYSTEM_PROMPT)
+  const [reportCfg,       setReportCfg]       = useState<ReportConfig | null>(null)
+  const [showAranzadi,    setShowAranzadi]    = useState(false)
+  const [codigoAranzadi,  setCodigoAranzadi]  = useState('')
+  const [showReview,      setShowReview]      = useState(false)
 
-  // Carga config de IA y de informe al montar
+  // Carga config de IA y de informe al montar; los defaults se mantienen si no hay datos en BD
   useEffect(() => {
     async function loadConfigs() {
       const [{ data: aiData }, { data: rptData }] = await Promise.all([
-        supabase.from('ai_bias').select('fields').eq('user_id', user.id).maybeSingle(),
+        supabase.from('ai_bias').select('model, system_prompt, fields').eq('user_id', user.id).maybeSingle(),
         supabase.from('report_config').select('*').eq('user_id', user.id).maybeSingle(),
       ])
-      if (aiData?.fields?.length) setAiFields(aiData.fields as ExtractionField[])
+      if (Array.isArray(aiData?.fields) && aiData.fields.length > 0) setAiFields(aiData.fields as ExtractionField[])
+      if (aiData?.model)         setAiModel(aiData.model as string)
+      if (aiData?.system_prompt) setAiPrompt(aiData.system_prompt as string)
       if (rptData) setReportCfg(rptData as ReportConfig)
     }
     loadConfigs()
@@ -417,21 +666,69 @@ export default function NewAnalysisPage({ user }: { user: User }) {
     setSlotFiles((p) => { const n = { ...p }; delete n[slotId]; return n })
   }
 
-  async function handleAnalyze() {
-    setStep('processing'); setProgress(0)
+  // Abre el modal para pedir el código Aranzadi
+  function handleRequestAnalyze() {
+    setShowAranzadi(true)
+  }
+
+  // Llamado desde el modal al confirmar el código
+  async function handleAnalyze(codigo: string) {
+    setShowAranzadi(false)
+    setCodigoAranzadi(codigo)
+    setStep('processing'); setProgress(0); setAnalysisError(null)
     let tick = 0
+    let failed = false
     const iv = setInterval(() => { tick++; setProgress((p) => Math.min(p + Math.max(1, 8 - tick), 90)) }, 600)
     try {
-      // TODO: llamar a Supabase Edge Function → Claude API y guardar resultado real
-      // Por ahora usa el resultado simulado
-      await new Promise((r) => setTimeout(r, 800))
-      setAnalysisResult(MOCK_RESULT)
+      // ── 1. Extraer texto de cada documento ──
+      const textEntries = await Promise.all(
+        Object.entries(slotFiles).map(async ([slotId, slotFile]) => {
+          const text = await extractTextFromFile(slotFile!.file as File)
+          return [slotId, text] as [string, string]
+        }),
+      )
+      const texts = Object.fromEntries(textEntries)
+
+      // ── 2. Llamar a Claude ──
+      const result = await callAI({
+        texts,
+        model: aiModel,
+        system_prompt: aiPrompt,
+        fields: aiFields,
+      })
+
+      setAnalysisResult(result)
+      setShowReview(true)
+    } catch (err) {
+      failed = true
+      const msg = err instanceof Error ? err.message : 'Error desconocido al analizar los documentos'
+      setAnalysisError(msg)
     } finally {
-      clearInterval(iv); setProgress(100); setTimeout(() => setStep('result'), 400)
+      clearInterval(iv)
+      if (failed) {
+        setProgress(0)
+        setStep('upload')
+      } else {
+        setProgress(100)
+        setStep('result')
+      }
     }
   }
 
+  async function handleConfirmReview(confirmedData: AnalysisResult) {
+    setShowReview(false)
+    setAnalysisResult(confirmedData)
+    await supabase.from('historial_analisis').insert({
+      user_id:         user.id,
+      codigo_aranzadi: codigoAranzadi,
+      equipo:          getDeviceName(),
+      documentos:      Object.values(slotFiles).map((f) => f!.name),
+      resultado:       confirmedData,
+    })
+  }
+
   function handleDownload() {
+    if (!analysisResult) return
     setDownloadError(null)
     try {
       const defaultSections = [
@@ -458,10 +755,26 @@ export default function NewAnalysisPage({ user }: { user: User }) {
   }
 
   function handleNewAnalysis() {
-    setSlotFiles({}); setProgress(0); setDownloadError(null); setStep('upload')
+    setSlotFiles({}); setProgress(0); setDownloadError(null); setAnalysisError(null)
+    setAnalysisResult(null); setShowReview(false); setStep('upload')
   }
 
   return (
+    <>
+    {showAranzadi && (
+      <AranzadiModal
+        onConfirm={handleAnalyze}
+        onCancel={() => setShowAranzadi(false)}
+      />
+    )}
+    {showReview && analysisResult && (
+      <ReviewModal
+        data={analysisResult}
+        codigoAranzadi={codigoAranzadi}
+        onConfirm={handleConfirmReview}
+        onCancel={() => { setShowReview(false); setStep('upload') }}
+      />
+    )}
     <div className="min-h-full flex flex-col items-center justify-start py-10 px-6">
       <div className="w-full max-w-2xl">
         {/* Encabezado */}
@@ -476,7 +789,15 @@ export default function NewAnalysisPage({ user }: { user: User }) {
 
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
           {step === 'upload' && (
-            <UploadStep slotFiles={slotFiles} onFile={handleFile} onRemove={handleRemove} onAnalyze={handleAnalyze} />
+            <>
+              {analysisError && (
+                <div role="alert" className="mb-5 flex items-start gap-2.5 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>{analysisError}</span>
+                </div>
+              )}
+              <UploadStep slotFiles={slotFiles} onFile={handleFile} onRemove={handleRemove} onAnalyze={handleRequestAnalyze} />
+            </>
           )}
           {step === 'processing' && <ProcessingStep progress={progress} />}
           {step === 'result' && (
@@ -485,5 +806,6 @@ export default function NewAnalysisPage({ user }: { user: User }) {
         </div>
       </div>
     </div>
+    </>
   )
 }

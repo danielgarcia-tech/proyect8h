@@ -185,7 +185,6 @@ export function generatePdf(
             alternateRowStyles: { fillColor: [248, 250, 252] },
             columnStyles: { 0: { cellWidth: 55, fontStyle: 'bold', textColor: [pr, pg, pb] } },
             theme: 'grid',
-            didDrawPage: () => { y = (doc as any).lastAutoTable.finalY + 6 },
           })
           y = (doc as any).lastAutoTable.finalY + 10
         }
@@ -210,7 +209,6 @@ export function generatePdf(
             alternateRowStyles: { fillColor: [248, 250, 252] },
             columnStyles: { 0: { cellWidth: 65, fontStyle: 'bold', textColor: [60, 60, 80] } },
             theme: 'striped',
-            didDrawPage: () => { y = (doc as any).lastAutoTable.finalY + 6 },
           })
           y = (doc as any).lastAutoTable.finalY + 10
         } else {
