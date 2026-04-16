@@ -41,17 +41,6 @@ const BLUE  = '2B58C4'
 const LGRAY = 'F8FAFC'
 const DGRAY = '374151'
 
-// ── Celda de cabecera de tabla ─────────────────────────────────────────────
-function headerCell(text: string): TableCell {
-  return new TableCell({
-    shading: { type: ShadingType.SOLID, color: BLUE },
-    borders: { top: { style: BorderStyle.NONE }, bottom: { style: BorderStyle.NONE }, left: { style: BorderStyle.NONE }, right: { style: BorderStyle.NONE } },
-    children: [new Paragraph({
-      children: [new TextRun({ text, bold: true, color: 'FFFFFF', size: 18 })],
-    })],
-  })
-}
-
 // ── Celda de etiqueta (columna izq) ───────────────────────────────────────
 function labelCell(text: string): TableCell {
   return new TableCell({

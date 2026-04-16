@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
-import { DEFAULT_FIELDS, DEFAULT_AI_MODEL, DEFAULT_SYSTEM_PROMPT } from '../lib/aiDefaults'
+import { DEFAULT_FIELDS } from '../lib/aiDefaults'
 import { generatePdf } from '../lib/generatePdf'
 import type { ExtractionField, ReportConfig } from '../lib/generatePdf'
 import { generateWord } from '../lib/generateWord'

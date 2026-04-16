@@ -24,7 +24,6 @@ import { callAI } from '../lib/aiCalling'
 import { generatePdf } from '../lib/generatePdf'
 import type { ExtractionField, ReportConfig, AnalysisResult } from '../lib/generatePdf'
 import { DEFAULT_FIELDS, DEFAULT_SYSTEM_PROMPT, DEFAULT_AI_MODEL } from '../lib/aiDefaults'
-import { generateWord } from '../lib/generateWord'
 
 // ── Slots ─────────────────────────────────────────────────────────────────
 const DOC_SLOTS = [
