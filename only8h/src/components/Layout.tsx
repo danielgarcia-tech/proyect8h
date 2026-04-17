@@ -1,4 +1,5 @@
-import { Scale, FilePlus, History, LogOut, ChevronRight, LayoutDashboard, Settings } from 'lucide-react'
+import { FilePlus, History, LogOut, ChevronRight, LayoutDashboard, Settings } from 'lucide-react'
+import logo from '../assets/logo.png'
 import { supabase } from '../lib/supabase'
 import type { User } from '@supabase/supabase-js'
 import type { Page } from '../App'
@@ -52,16 +53,8 @@ export default function Layout({ user, currentPage, onNavigate, children }: Layo
         aria-label="Navegación principal"
       >
         {/* Brand */}
-        <div className="px-5 py-5 border-b border-gray-100">
-          <div className="flex items-center gap-2.5">
-            <div className="flex-shrink-0 w-8 h-8 bg-[#2B58C4] rounded-lg flex items-center justify-center">
-              <Scale className="w-4 h-4 text-white" aria-hidden="true" />
-            </div>
-            <div>
-              <span className="text-base font-bold text-[#2B58C4] tracking-tight">ONLY8H</span>
-              <p className="text-[10px] text-gray-400 leading-none mt-0.5">RUA Abogados</p>
-            </div>
-          </div>
+        <div className="px-5 py-4 border-b border-gray-100">
+          <img src={logo} alt="ONLY8H · RUA Abogados" className="h-9 w-auto object-contain" />
         </div>
 
         {/* Navigation */}

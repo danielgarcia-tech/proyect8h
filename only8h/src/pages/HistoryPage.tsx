@@ -3,7 +3,7 @@ import {
   FileText, Inbox, Eye, X, Monitor, Calendar, Hash,
   Edit3, Save, Plus, Trash2, CheckCircle2, AlertCircle,
   Gavel, Users, Clock, ListChecks, ShieldAlert, BookOpen,
-  ChevronRight, FileDown, FileType,
+  ChevronRight, FileDown, FileType, Search,
 } from 'lucide-react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
@@ -727,11 +727,72 @@ function ExpedienteModal({ entry, onClose, onEdit }: {
   )
 }
 
+// ── Modal confirmación de eliminación ─────────────────────────────────────
+function DeleteConfirmModal({ entry, userEmail, loading, onConfirm, onCancel }: {
+  entry: HistorialEntry
+  userEmail: string
+  loading: boolean
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-[2px]" onClick={onCancel} />
+      <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl border border-gray-100 p-6">
+        {/* Icono */}
+        <div className="w-12 h-12 rounded-2xl bg-red-50 flex items-center justify-center mx-auto mb-4">
+          <Trash2 className="w-5 h-5 text-red-500" />
+        </div>
+
+        <h3 className="text-base font-bold text-center text-gray-900 mb-1">Eliminar expediente</h3>
+        <p className="text-sm text-center text-gray-500 mb-4">
+          Esta acción es permanente y no se puede deshacer.
+        </p>
+
+        {/* Código */}
+        <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 mb-4 text-center">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-0.5">Expediente</p>
+          <p className="text-sm font-bold text-gray-900 font-mono">{entry.codigo_aranzadi}</p>
+        </div>
+
+        {/* Aviso de auditoría */}
+        <div className="flex items-start gap-2.5 bg-amber-50 border border-amber-100 rounded-xl px-4 py-3 mb-5">
+          <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-700 leading-relaxed">
+            La eliminación quedará registrada en el log de auditoría como realizada por{' '}
+            <strong className="font-semibold">{userEmail}</strong>.
+          </p>
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            onClick={onCancel}
+            className="flex-1 py-2.5 text-sm font-semibold text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-xl transition focus:outline-none"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={loading}
+            className="flex-1 py-2.5 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-xl transition disabled:opacity-60 disabled:cursor-not-allowed focus:outline-none flex items-center justify-center gap-2"
+          >
+            {loading
+              ? <><div className="w-3.5 h-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin" />Eliminando…</>
+              : <><Trash2 className="w-3.5 h-3.5" />Eliminar</>
+            }
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Fila tabla ─────────────────────────────────────────────────────────────
-function HistoryRow({ entry, onView, onEdit }: {
+function HistoryRow({ entry, onView, onEdit, onDelete }: {
   entry: HistorialEntry
   onView: () => void
   onEdit: () => void
+  onDelete: () => void
 }) {
   const demandante = entry.resultado['demandante'] as string | undefined
   const demandado  = entry.resultado['demandado']  as string | undefined
@@ -774,6 +835,10 @@ function HistoryRow({ entry, onView, onEdit }: {
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#2B58C4] border border-[#2B58C4]/30 rounded-lg hover:bg-[#2B58C4] hover:text-white hover:border-[#2B58C4] transition focus:outline-none">
             <Edit3 className="w-3.5 h-3.5" />Editar
           </button>
+          <button onClick={onDelete}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-600 border border-red-200 rounded-lg hover:bg-red-600 hover:text-white hover:border-red-600 transition focus:outline-none">
+            <Trash2 className="w-3.5 h-3.5" />Eliminar
+          </button>
         </div>
       </td>
     </tr>
@@ -797,10 +862,26 @@ function EmptyState() {
 
 // ── Página principal ───────────────────────────────────────────────────────
 export default function HistoryPage({ user }: HistoryPageProps) {
-  const [entries,  setEntries]  = useState<HistorialEntry[]>([])
-  const [loading,  setLoading]  = useState(true)
-  const [viewing,  setViewing]  = useState<HistorialEntry | null>(null)
-  const [editing,  setEditing]  = useState<HistorialEntry | null>(null)
+  const [entries,       setEntries]       = useState<HistorialEntry[]>([])
+  const [loading,       setLoading]       = useState(true)
+  const [viewing,       setViewing]       = useState<HistorialEntry | null>(null)
+  const [editing,       setEditing]       = useState<HistorialEntry | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<HistorialEntry | null>(null)
+  const [deleting,      setDeleting]      = useState(false)
+  const [query,         setQuery]         = useState('')
+
+  const filtered = query.trim() === ''
+    ? entries
+    : entries.filter(e => {
+        const q = query.trim().toLowerCase()
+        const demandante = String(e.resultado['demandante'] ?? '').toLowerCase()
+        const demandado  = String(e.resultado['demandado']  ?? '').toLowerCase()
+        return (
+          e.codigo_aranzadi.toLowerCase().includes(q) ||
+          demandante.includes(q) ||
+          demandado.includes(q)
+        )
+      })
 
   useEffect(() => {
     async function load() {
@@ -818,11 +899,41 @@ export default function HistoryPage({ user }: HistoryPageProps) {
 
   function handleSaved(updated: HistorialEntry) {
     setEntries((prev) => prev.map((e) => e.id === updated.id ? updated : e))
-    setEditing(updated)   // mantiene el editor abierto con datos frescos
+    setEditing(updated)
+  }
+
+  async function handleDelete() {
+    if (!confirmDelete) return
+    setDeleting(true)
+    try {
+      // Registrar en log de auditoría antes de eliminar
+      await supabase.from('eliminaciones_log').insert({
+        historial_id:        confirmDelete.id,
+        codigo_aranzadi:     confirmDelete.codigo_aranzadi,
+        eliminado_por_id:    user.id,
+        eliminado_por_email: user.email ?? '',
+      })
+      await supabase.from('historial_analisis').delete().eq('id', confirmDelete.id)
+      setEntries((prev) => prev.filter((e) => e.id !== confirmDelete.id))
+      setConfirmDelete(null)
+    } finally {
+      setDeleting(false)
+    }
   }
 
   return (
     <>
+      {/* Modal confirmación eliminación */}
+      {confirmDelete && (
+        <DeleteConfirmModal
+          entry={confirmDelete}
+          userEmail={user.email ?? ''}
+          loading={deleting}
+          onConfirm={handleDelete}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+
       {/* Modal lectura */}
       {viewing && !editing && (
         <ExpedienteModal
@@ -842,17 +953,45 @@ export default function HistoryPage({ user }: HistoryPageProps) {
       )}
 
       <div className="px-8 py-8 max-w-5xl">
-        <div className="flex items-center justify-between mb-6">
+        {/* Cabecera */}
+        <div className="flex items-center justify-between mb-5">
           <div>
             <h2 className="text-xl font-bold text-gray-900">Historial de análisis</h2>
             <p className="text-sm text-gray-500 mt-0.5">Todos los expedientes analizados por el equipo</p>
           </div>
           {!loading && entries.length > 0 && (
             <span className="text-sm text-gray-400">
-              {entries.length} expediente{entries.length !== 1 ? 's' : ''}
+              {filtered.length !== entries.length
+                ? `${filtered.length} de ${entries.length} expediente${entries.length !== 1 ? 's' : ''}`
+                : `${entries.length} expediente${entries.length !== 1 ? 's' : ''}`
+              }
             </span>
           )}
         </div>
+
+        {/* Buscador */}
+        {!loading && entries.length > 0 && (
+          <div className="relative mb-4">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Buscar por código Aranzadi, demandante o demandado…"
+              className="w-full pl-10 pr-4 py-2.5 text-sm bg-white border border-gray-200 rounded-xl shadow-sm
+                         placeholder-gray-400 text-gray-800 focus:outline-none focus:ring-2
+                         focus:ring-[#2B58C4]/25 focus:border-[#2B58C4] transition"
+            />
+            {query && (
+              <button
+                onClick={() => setQuery('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 p-0.5 text-gray-400 hover:text-gray-600 transition"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        )}
 
         {loading ? (
           <div className="flex justify-center py-20">
@@ -861,6 +1000,18 @@ export default function HistoryPage({ user }: HistoryPageProps) {
         ) : entries.length === 0 ? (
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
             <EmptyState />
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm py-16 text-center">
+            <Search className="w-8 h-8 text-gray-300 mx-auto mb-3" />
+            <p className="text-sm font-semibold text-gray-500">Sin resultados para "{query}"</p>
+            <p className="text-xs text-gray-400 mt-1">Prueba con el código Aranzadi o el nombre de las partes</p>
+            <button
+              onClick={() => setQuery('')}
+              className="mt-4 text-xs text-[#2B58C4] hover:underline font-medium"
+            >
+              Limpiar búsqueda
+            </button>
           </div>
         ) : (
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
@@ -875,12 +1026,13 @@ export default function HistoryPage({ user }: HistoryPageProps) {
                   </tr>
                 </thead>
                 <tbody>
-                  {entries.map((entry) => (
+                  {filtered.map((entry) => (
                     <HistoryRow
                       key={entry.id}
                       entry={entry}
                       onView={() => setViewing(entry)}
                       onEdit={() => setEditing(entry)}
+                      onDelete={() => setConfirmDelete(entry)}
                     />
                   ))}
                 </tbody>

@@ -370,7 +370,10 @@ function UploadStep({
 }
 
 // ── Step 2: Processing ─────────────────────────────────────────────────────
-function ProcessingStep({ progress }: { progress: number }) {
+function ProcessingStep({ progress, truncatedFiles }: {
+  progress: number
+  truncatedFiles: Array<{ name: string; total: number; processed: number }>
+}) {
   const mi = Math.min(Math.floor(progress / 25), STATUS_MESSAGES.length - 1)
   return (
     <div className="flex flex-col items-center py-16 text-center">
@@ -388,6 +391,22 @@ function ProcessingStep({ progress }: { progress: number }) {
       </div>
       <p className="text-sm font-semibold text-gray-800 mb-1">Analizando documentos</p>
       <p className="text-xs text-gray-400">{STATUS_MESSAGES[mi]}</p>
+
+      {truncatedFiles.length > 0 && (
+        <div className="mt-8 w-full max-w-sm text-left flex items-start gap-3 px-4 py-3.5
+                        bg-amber-50 border border-amber-200 rounded-xl">
+          <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-xs font-semibold text-amber-800 mb-1">Documento extenso detectado</p>
+            {truncatedFiles.map((f, i) => (
+              <p key={i} className="text-[11px] text-amber-700 leading-relaxed">
+                <span className="font-mono font-medium">{f.name}</span> tiene {f.total} páginas —
+                se analizarán solo las primeras <strong>{f.processed}</strong>.
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -698,6 +717,7 @@ export default function NewAnalysisPage({ user }: { user: User }) {
   const [step,            setStep]            = useState<Step>('upload')
   const [slotFiles,       setSlotFiles]       = useState<Partial<Record<SlotId, SlotFile>>>({})
   const [progress,        setProgress]        = useState(0)
+  const [truncatedFiles,  setTruncatedFiles]  = useState<Array<{ name: string; total: number; processed: number }>>([])
   const [downloadError,   setDownloadError]   = useState<string | null>(null)
   const [analysisError,   setAnalysisError]   = useState<string | null>(null)
   const [analysisResult,  setAnalysisResult]  = useState<AnalysisResult | null>(null)
@@ -747,18 +767,23 @@ export default function NewAnalysisPage({ user }: { user: User }) {
   async function handleAnalyze(codigo: string) {
     setShowAranzadi(false)
     setCodigoAranzadi(codigo)
-    setStep('processing'); setProgress(0); setAnalysisError(null)
+    setStep('processing'); setProgress(0); setAnalysisError(null); setTruncatedFiles([])
     let tick = 0
     let failed = false
     const iv = setInterval(() => { tick++; setProgress((p) => Math.min(p + Math.max(1, 8 - tick), 90)) }, 600)
     try {
       // ── 1. Extraer texto de cada documento ──
+      const truncated: Array<{ name: string; total: number; processed: number }> = []
       const textEntries = await Promise.all(
         Object.entries(slotFiles).map(async ([slotId, slotFile]) => {
-          const text = await extractTextFromFile(slotFile!.file as File)
-          return [slotId, text] as [string, string]
+          const result = await extractTextFromFile(slotFile!.file as File)
+          if (result.truncated) {
+            truncated.push({ name: slotFile!.file.name, ...result.truncated })
+          }
+          return [slotId, result.text] as [string, string]
         }),
       )
+      if (truncated.length > 0) setTruncatedFiles(truncated)
       const texts = Object.fromEntries(textEntries)
 
       // ── 2. Llamar a Claude ──
@@ -873,7 +898,7 @@ export default function NewAnalysisPage({ user }: { user: User }) {
               <UploadStep slotFiles={slotFiles} onFile={handleFile} onRemove={handleRemove} onAnalyze={handleRequestAnalyze} />
             </>
           )}
-          {step === 'processing' && <ProcessingStep progress={progress} />}
+          {step === 'processing' && <ProcessingStep progress={progress} truncatedFiles={truncatedFiles} />}
           {step === 'result' && (
             <ResultStep slotFiles={slotFiles} onDownload={handleDownload} onNewAnalysis={handleNewAnalysis} downloadError={downloadError} />
           )}
