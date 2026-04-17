@@ -15,6 +15,7 @@ import {
   FilePlus,
   ArrowRight,
   Hash,
+  ShieldAlert,
 } from 'lucide-react'
 import type { UploadedFile } from '../types'
 import type { User } from '@supabase/supabase-js'
@@ -22,7 +23,7 @@ import { supabase } from '../lib/supabase'
 import { extractTextFromFile } from '../lib/extractText'
 import { callAI } from '../lib/aiCalling'
 import { generatePdf } from '../lib/generatePdf'
-import type { ExtractionField, ReportConfig, AnalysisResult } from '../lib/generatePdf'
+import type { ExtractionField, ReportConfig, AnalysisResult, ExcepcionConfig } from '../lib/generatePdf'
 import { DEFAULT_FIELDS, DEFAULT_SYSTEM_PROMPT, DEFAULT_AI_MODEL } from '../lib/aiDefaults'
 
 // ── Slots ─────────────────────────────────────────────────────────────────
@@ -517,9 +518,10 @@ function ReviewList({ label, items, onChange, color }: {
   )
 }
 
-function ReviewModal({ data: initial, codigoAranzadi, onConfirm, onCancel }: {
+function ReviewModal({ data: initial, codigoAranzadi, excepcionesConfig = [], onConfirm, onCancel }: {
   data: AnalysisResult
   codigoAranzadi: string
+  excepcionesConfig?: ExcepcionConfig[]
   onConfirm: (data: AnalysisResult) => void
   onCancel: () => void
 }) {
@@ -527,6 +529,40 @@ function ReviewModal({ data: initial, codigoAranzadi, onConfirm, onCancel }: {
   const [active, setActive] = useState<ReviewSection>('procedimiento')
   const g = (k: string) => String(data[k] ?? '')
   const set = (k: string, v: unknown) => setData((p) => ({ ...p, [k]: v }))
+
+  // ── helpers para el catálogo de excepciones ──
+  const excItems: string[] = toArr(data['excepciones_procesales'])
+
+  function isCatalogActive(nombre: string) {
+    const n = nombre.trim().toLowerCase()
+    return excItems.some((i) => i.trim().toLowerCase() === n || i.trim().toLowerCase().includes(n))
+  }
+
+  function toggleCatalogItem(nombre: string) {
+    if (isCatalogActive(nombre)) {
+      const next = excItems.filter((i) => {
+        const il = i.trim().toLowerCase()
+        const nl = nombre.trim().toLowerCase()
+        return il !== nl && !il.includes(nl)
+      })
+      set('excepciones_procesales', next.length ? next : null)
+    } else {
+      set('excepciones_procesales', [...excItems, nombre])
+    }
+  }
+
+  function updateCustomExc(newCustom: string[]) {
+    const catalogActivos = excepcionesConfig.filter((c) => isCatalogActive(c.nombre)).map((c) => c.nombre)
+    const merged = [...catalogActivos, ...newCustom]
+    set('excepciones_procesales', merged.length ? merged : null)
+  }
+
+  const customExcItems = excItems.filter((item) =>
+    !excepcionesConfig.some((c) => {
+      const n = c.nombre.trim().toLowerCase()
+      return item.trim().toLowerCase() === n || item.trim().toLowerCase().includes(n)
+    })
+  )
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -603,13 +639,47 @@ function ReviewModal({ data: initial, codigoAranzadi, onConfirm, onCancel }: {
           )}
 
           {active === 'excepcion' && (
-            <div className="space-y-3">
+            <div className="space-y-4">
               <div className="flex items-start gap-3 p-3 rounded-xl bg-red-50 border border-red-100 text-xs text-red-700">
-                <span className="text-base">🛡️</span>
-                Excepciones procesales alegadas por el demandado. Si no hay, deja la lista vacía.
+                <ShieldAlert className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <span>Excepciones procesales alegadas por el demandado. Selecciona del catálogo o añade libremente.</span>
               </div>
-              <ReviewList label="Excepciones procesales" items={toArr(data['excepciones_procesales'])}
-                onChange={(v) => set('excepciones_procesales', v.length ? v : null)} color="#DC2626" />
+
+              {/* Catálogo */}
+              {excepcionesConfig.length > 0 && (
+                <div>
+                  <label className="block text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-2">Del catálogo configurado</label>
+                  <div className="flex flex-wrap gap-2">
+                    {excepcionesConfig.map((c) => {
+                      const active = isCatalogActive(c.nombre)
+                      return (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => toggleCatalogItem(c.nombre)}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition focus:outline-none ${
+                            active
+                              ? 'bg-red-600 border-red-600 text-white'
+                              : 'bg-white border-gray-200 text-gray-600 hover:border-red-300 hover:text-red-600'
+                          }`}
+                        >
+                          <ShieldAlert className="w-3 h-3" />
+                          {c.nombre}
+                          {active && <CheckCircle2 className="w-3 h-3" />}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Libres */}
+              <ReviewList
+                label={excepcionesConfig.length > 0 ? 'Excepciones personalizadas (texto libre)' : 'Excepciones procesales'}
+                items={customExcItems}
+                onChange={updateCustomExc}
+                color="#DC2626"
+              />
             </div>
           )}
 
@@ -631,25 +701,28 @@ export default function NewAnalysisPage({ user }: { user: User }) {
   const [downloadError,   setDownloadError]   = useState<string | null>(null)
   const [analysisError,   setAnalysisError]   = useState<string | null>(null)
   const [analysisResult,  setAnalysisResult]  = useState<AnalysisResult | null>(null)
-  const [aiFields,        setAiFields]        = useState<ExtractionField[]>(DEFAULT_FIELDS)
-  const [aiModel,         setAiModel]         = useState(DEFAULT_AI_MODEL)
-  const [aiPrompt,        setAiPrompt]        = useState(DEFAULT_SYSTEM_PROMPT)
-  const [reportCfg,       setReportCfg]       = useState<ReportConfig | null>(null)
-  const [showAranzadi,    setShowAranzadi]    = useState(false)
-  const [codigoAranzadi,  setCodigoAranzadi]  = useState('')
-  const [showReview,      setShowReview]      = useState(false)
+  const [aiFields,          setAiFields]          = useState<ExtractionField[]>(DEFAULT_FIELDS)
+  const [aiModel,           setAiModel]           = useState(DEFAULT_AI_MODEL)
+  const [aiPrompt,          setAiPrompt]          = useState(DEFAULT_SYSTEM_PROMPT)
+  const [reportCfg,         setReportCfg]         = useState<ReportConfig | null>(null)
+  const [excepcionesConfig, setExcepcionesConfig] = useState<ExcepcionConfig[]>([])
+  const [showAranzadi,      setShowAranzadi]      = useState(false)
+  const [codigoAranzadi,    setCodigoAranzadi]    = useState('')
+  const [showReview,        setShowReview]        = useState(false)
 
   // Carga config de IA y de informe al montar; los defaults se mantienen si no hay datos en BD
   useEffect(() => {
     async function loadConfigs() {
-      const [{ data: aiData }, { data: rptData }] = await Promise.all([
+      const [{ data: aiData }, { data: rptData }, { data: excData }] = await Promise.all([
         supabase.from('ai_bias').select('model, system_prompt, fields').eq('user_id', user.id).maybeSingle(),
         supabase.from('report_config').select('*').eq('user_id', user.id).maybeSingle(),
+        supabase.from('excepciones_procesales').select('id, nombre, texto_asociado').eq('user_id', user.id),
       ])
       if (Array.isArray(aiData?.fields) && aiData.fields.length > 0) setAiFields(aiData.fields as ExtractionField[])
       if (aiData?.model)         setAiModel(aiData.model as string)
       if (aiData?.system_prompt) setAiPrompt(aiData.system_prompt as string)
       if (rptData) setReportCfg(rptData as ReportConfig)
+      if (Array.isArray(excData)) setExcepcionesConfig(excData as ExcepcionConfig[])
     }
     loadConfigs()
   }, [user.id])
@@ -731,13 +804,14 @@ export default function NewAnalysisPage({ user }: { user: User }) {
     setDownloadError(null)
     try {
       const defaultSections = [
-        { id: 'portada',      title: 'Portada',                 subtitle: '', enabled: true },
-        { id: 'datos',        title: 'Datos del procedimiento', subtitle: '', enabled: true },
-        { id: 'acciones',     title: 'Acciones ejercitadas',    subtitle: '', enabled: true },
-        { id: 'calendario',   title: 'Calendario procesal',     subtitle: '', enabled: true },
-        { id: 'excepciones',  title: 'Excepciones procesales',  subtitle: '', enabled: true },
-        { id: 'hechos',       title: 'Hechos controvertidos',   subtitle: '', enabled: true },
-        { id: 'conclusiones', title: 'Conclusiones',            subtitle: '', enabled: true },
+        { id: 'portada',      title: 'Portada',                  subtitle: '', enabled: true },
+        { id: 'timeline',     title: 'Cronología del asunto',    subtitle: '', enabled: true },
+        { id: 'calendario',   title: 'Calendario procesal',      subtitle: '', enabled: true },
+        { id: 'acciones',     title: 'Acciones ejercitadas',     subtitle: '', enabled: true },
+        { id: 'excepciones',  title: 'Excepciones procesales',   subtitle: '', enabled: true },
+        { id: 'hechos',       title: 'Hechos controvertidos',    subtitle: '', enabled: true },
+        { id: 'datos',        title: 'Datos adicionales',        subtitle: '', enabled: false },
+        { id: 'conclusiones', title: 'Conclusiones',             subtitle: '', enabled: true },
       ]
       const cfg: ReportConfig = reportCfg ?? {
         firm_name: '', firm_tagline: '', firm_address: '',
@@ -746,7 +820,7 @@ export default function NewAnalysisPage({ user }: { user: User }) {
         primary_color: '#2B58C4', secondary_color: '#F8FAFC',
         font_size: 'normal', sections: defaultSections,
       }
-      generatePdf(analysisResult, aiFields, cfg)
+      generatePdf(analysisResult, aiFields, cfg, excepcionesConfig)
     } catch (e) {
       console.error(e)
       setDownloadError('No se pudo generar el PDF. Inténtalo de nuevo.')
@@ -770,6 +844,7 @@ export default function NewAnalysisPage({ user }: { user: User }) {
       <ReviewModal
         data={analysisResult}
         codigoAranzadi={codigoAranzadi}
+        excepcionesConfig={excepcionesConfig}
         onConfirm={handleConfirmReview}
         onCancel={() => { setShowReview(false); setStep('upload') }}
       />

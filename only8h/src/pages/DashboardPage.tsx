@@ -3,22 +3,22 @@ import { supabase } from '../lib/supabase'
 import type { Page } from '../App'
 import {
   FilePlus2,
-  FileText,
-  Clock,
-  TrendingUp,
   AlertTriangle,
   CheckCircle2,
   ChevronRight,
+  ArrowRight,
+  History,
+  Settings,
 } from 'lucide-react'
 
 interface Props {
   onNavigate: (p: Page) => void
 }
 
-interface RecentAnalysis {
+interface RecentEntry {
   id: string
   created_at: string
-  titulo: string
+  codigo_aranzadi: string
   n_docs: number
 }
 
@@ -34,10 +34,24 @@ function formatDate(iso: string) {
   }).format(new Date(iso))
 }
 
+function greeting() {
+  const h = new Date().getHours()
+  if (h < 12) return 'Buenos días'
+  if (h < 20) return 'Buenas tardes'
+  return 'Buenas noches'
+}
+
+function todayLabel() {
+  const raw = new Intl.DateTimeFormat('es-ES', {
+    weekday: 'long', day: 'numeric', month: 'long',
+  }).format(new Date())
+  return raw.charAt(0).toUpperCase() + raw.slice(1)
+}
+
 export default function DashboardPage({ onNavigate }: Props) {
-  const [stats, setStats]   = useState<Stats>({ total: 0, este_mes: 0, documentos_procesados: 0 })
-  const [recent, setRecent] = useState<RecentAnalysis[]>([])
-  const [loading, setLoading] = useState(true)
+  const [stats, setStats]       = useState<Stats>({ total: 0, este_mes: 0, documentos_procesados: 0 })
+  const [recent, setRecent]     = useState<RecentEntry[]>([])
+  const [loading, setLoading]   = useState(true)
   const [userName, setUserName] = useState('')
 
   useEffect(() => {
@@ -50,246 +64,206 @@ export default function DashboardPage({ onNavigate }: Props) {
   async function loadData() {
     setLoading(true)
     try {
-      // Sesiones totales del usuario
-      const { data: sesiones } = await supabase
-        .from('instructas_sesiones')
-        .select('id, created_at, titulo')
-        .eq('estado', 'completado')
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      const { data: rows } = await supabase
+        .from('historial_analisis')
+        .select('id, created_at, codigo_aranzadi, documentos')
+        .eq('user_id', user.id)
         .order('created_at', { ascending: false })
 
-      if (!sesiones) { setLoading(false); return }
+      if (!rows) return
 
-      const now = new Date()
-      const inicioMes = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
-      const esteMes = sesiones.filter(s => s.created_at >= inicioMes).length
+      const inicioMes = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString()
+      const esteMes   = rows.filter(r => r.created_at >= inicioMes).length
+      const docCount  = rows.reduce((sum, r) => sum + (Array.isArray(r.documentos) ? r.documentos.length : 0), 0)
 
-      // Documentos procesados
-      const ids = sesiones.map(s => s.id)
-      let docCount = 0
-      if (ids.length > 0) {
-        const { count } = await supabase
-          .from('instructas_documentos')
-          .select('id', { count: 'exact', head: true })
-          .in('sesion_id', ids)
-        docCount = count ?? 0
-      }
-
-      // Análisis recientes (últimos 4)
-      const recentData: RecentAnalysis[] = await Promise.all(
-        sesiones.slice(0, 4).map(async (s) => {
-          const { count } = await supabase
-            .from('instructas_documentos')
-            .select('id', { count: 'exact', head: true })
-            .eq('sesion_id', s.id)
-          return { id: s.id, created_at: s.created_at, titulo: s.titulo, n_docs: count ?? 0 }
-        })
+      setStats({ total: rows.length, este_mes: esteMes, documentos_procesados: docCount })
+      setRecent(
+        rows.slice(0, 5).map(r => ({
+          id:              r.id,
+          created_at:      r.created_at,
+          codigo_aranzadi: r.codigo_aranzadi ?? 'Sin código',
+          n_docs:          Array.isArray(r.documentos) ? r.documentos.length : 0,
+        }))
       )
-
-      setStats({ total: sesiones.length, este_mes: esteMes, documentos_procesados: docCount })
-      setRecent(recentData)
     } finally {
       setLoading(false)
     }
   }
 
-  const greeting = () => {
-    const h = new Date().getHours()
-    if (h < 12) return 'Buenos días'
-    if (h < 20) return 'Buenas tardes'
-    return 'Buenas noches'
-  }
-
   return (
-    <div className="px-8 py-8 max-w-5xl">
-      {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-[#0F172A]">
-          {greeting()}, <span className="capitalize">{userName}</span>
-        </h1>
-        <p className="text-sm text-[#64748B] mt-1">
-          Panel de control · ONLY8H · RUA Abogados
-        </p>
-      </div>
+    <div className="min-h-full bg-[#F0F4FA]">
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
-        <StatCard
-          icon={<FileText className="w-5 h-5 text-[#2B58C4]" />}
-          label="Análisis totales"
-          value={loading ? '—' : String(stats.total)}
-          bg="bg-[#2B58C4]/8"
-        />
-        <StatCard
-          icon={<TrendingUp className="w-5 h-5 text-emerald-600" />}
-          label="Este mes"
-          value={loading ? '—' : String(stats.este_mes)}
-          bg="bg-emerald-50"
-        />
-        <StatCard
-          icon={<Clock className="w-5 h-5 text-amber-600" />}
-          label="Docs. procesados"
-          value={loading ? '—' : String(stats.documentos_procesados)}
-          bg="bg-amber-50"
-        />
-      </div>
+      {/* ── Hero ──────────────────────────────────────────────────────────── */}
+      <div className="relative overflow-hidden bg-gradient-to-br from-[#162B6E] via-[#1E3A8A] to-[#2563EB]">
+        <div className="absolute -top-20 -right-20 w-80 h-80 rounded-full bg-white/[0.04]" />
+        <div className="absolute top-6 right-52 w-36 h-36 rounded-full bg-white/[0.04]" />
+        <div className="absolute -bottom-24 left-1/3 w-72 h-72 rounded-full bg-white/[0.04]" />
 
-      {/* Quick actions */}
-      <div className="mb-8">
-        <h2 className="text-sm font-semibold text-[#64748B] uppercase tracking-wider mb-3">
-          Acciones rápidas
-        </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <QuickAction
-            icon={<FilePlus2 className="w-5 h-5 text-[#2B58C4]" />}
-            title="Nuevo análisis"
-            desc="Sube documentos y genera un informe"
-            onClick={() => onNavigate('new-analysis')}
-            highlight
-          />
-          <QuickAction
-            icon={<Clock className="w-5 h-5 text-[#64748B]" />}
-            title="Ver historial"
-            desc="Consulta y descarga análisis anteriores"
-            onClick={() => onNavigate('history')}
-          />
-        </div>
-      </div>
-
-      {/* Tipos de documento soportados */}
-      <div className="mb-8">
-        <h2 className="text-sm font-semibold text-[#64748B] uppercase tracking-wider mb-3">
-          Tipos de documento admitidos
-        </h2>
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {DOC_TYPES.map(dt => (
-              <div key={dt.label} className="flex items-center gap-2.5 p-3 rounded-lg bg-gray-50 border border-gray-100">
-                <span className={`w-2 h-2 rounded-full shrink-0 ${dt.color}`} />
-                <span className="text-sm font-medium text-[#0F172A]">{dt.label}</span>
-              </div>
-            ))}
-          </div>
-          <p className="text-xs text-[#94A3B8] mt-3">
-            Formatos de archivo: <span className="font-medium">PDF · DOCX</span>
-          </p>
-        </div>
-      </div>
-
-      {/* Análisis recientes */}
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold text-[#64748B] uppercase tracking-wider">
-            Análisis recientes
-          </h2>
-          {recent.length > 0 && (
-            <button
-              onClick={() => onNavigate('history')}
-              className="text-xs text-[#2B58C4] hover:underline flex items-center gap-1"
-            >
-              Ver todos <ChevronRight className="w-3 h-3" />
-            </button>
-          )}
-        </div>
-
-        {loading ? (
-          <div className="space-y-3">
-            {[1,2,3].map(i => (
-              <div key={i} className="h-16 bg-white rounded-xl border border-gray-100 animate-pulse" />
-            ))}
-          </div>
-        ) : recent.length === 0 ? (
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-8 text-center">
-            <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-3">
-              <AlertTriangle className="w-5 h-5 text-gray-400" />
+        <div className="relative px-10 pt-10 pb-9">
+          {/* Saludo + CTA */}
+          <div className="flex items-start justify-between gap-6 mb-8">
+            <div>
+              <p className="text-blue-300 text-[11px] font-semibold tracking-[0.12em] uppercase mb-2">
+                {todayLabel()}
+              </p>
+              <h1 className="text-[2rem] font-bold text-white leading-tight">
+                {greeting()},&nbsp;
+                <span className="capitalize">{userName || '—'}</span>
+              </h1>
+              <p className="text-blue-300/80 text-sm mt-1.5">
+                Panel de control · ONLY8H · RUA Abogados
+              </p>
             </div>
-            <p className="text-sm font-medium text-[#64748B]">Aún no hay análisis</p>
-            <p className="text-xs text-[#94A3B8] mt-1">
-              Crea tu primer análisis para verlo aquí
-            </p>
+
             <button
               onClick={() => onNavigate('new-analysis')}
-              className="mt-4 px-4 py-2 bg-[#2B58C4] text-white text-xs font-semibold rounded-lg hover:bg-[#2040A8] transition"
+              className="flex items-center gap-2 bg-white text-[#1E3A8A] px-5 py-3 rounded-xl font-semibold text-sm
+                         hover:bg-blue-50 active:scale-[0.97] transition-all shadow-2xl shadow-blue-950/40 shrink-0 mt-1"
             >
-              Empezar
+              <FilePlus2 className="w-4 h-4" />
+              Nuevo análisis
+              <ArrowRight className="w-4 h-4 opacity-70" />
             </button>
           </div>
-        ) : (
-          <div className="space-y-2">
-            {recent.map(r => (
-              <div
-                key={r.id}
-                className="bg-white rounded-xl border border-gray-100 shadow-sm px-5 py-4 flex items-center gap-4"
-              >
-                <div className="w-8 h-8 rounded-lg bg-[#2B58C4]/10 flex items-center justify-center shrink-0">
-                  <CheckCircle2 className="w-4 h-4 text-[#2B58C4]" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-[#0F172A] truncate">{r.titulo}</p>
-                  <p className="text-xs text-[#94A3B8]">
-                    {r.n_docs} doc{r.n_docs !== 1 ? 's' : ''} · {formatDate(r.created_at)}
-                  </p>
-                </div>
-              </div>
-            ))}
+
+          {/* Stats glass */}
+          <div className="grid grid-cols-3 gap-3">
+            <StatGlass label="Análisis totales"       value={loading ? '—' : String(stats.total)} />
+            <StatGlass label="Este mes"               value={loading ? '—' : String(stats.este_mes)} />
+            <StatGlass label="Documentos procesados"  value={loading ? '—' : String(stats.documentos_procesados)} />
           </div>
-        )}
+        </div>
+      </div>
+
+      {/* ── Contenido ────────────────────────────────────────────────────── */}
+      <div className="px-10 py-8 max-w-4xl space-y-5">
+
+        {/* Análisis recientes */}
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-[13px] font-semibold text-[#1E293B]">Análisis recientes</h2>
+            {recent.length > 0 && (
+              <button
+                onClick={() => onNavigate('history')}
+                className="text-[12px] text-[#2563EB] hover:underline flex items-center gap-1 font-medium"
+              >
+                Ver todos <ChevronRight className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+
+          {loading ? (
+            <div className="space-y-2">
+              {[1, 2, 3].map(i => (
+                <div key={i} className="h-[68px] bg-white rounded-2xl border border-slate-100 animate-pulse" />
+              ))}
+            </div>
+          ) : recent.length === 0 ? (
+            <EmptyState onNavigate={onNavigate} />
+          ) : (
+            <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+              {recent.map((r, idx) => (
+                <div
+                  key={r.id}
+                  className={`px-5 py-4 flex items-center gap-4 hover:bg-slate-50/70 transition-colors ${
+                    idx !== 0 ? 'border-t border-slate-50' : ''
+                  }`}
+                >
+                  <div className="w-9 h-9 rounded-xl bg-[#2563EB]/10 flex items-center justify-center shrink-0">
+                    <CheckCircle2 className="w-4 h-4 text-[#2563EB]" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-semibold text-[#0F172A] truncate">{r.codigo_aranzadi}</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      {r.n_docs} documento{r.n_docs !== 1 ? 's' : ''} · {formatDate(r.created_at)}
+                    </p>
+                  </div>
+                  <span className="shrink-0 text-[11px] font-semibold text-emerald-700 bg-emerald-50
+                                   border border-emerald-100 px-2.5 py-1 rounded-full leading-none">
+                    Completado
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Accesos directos */}
+        <div className="grid grid-cols-2 gap-3">
+          <Shortcut
+            icon={<History className="w-5 h-5 text-[#2563EB]" />}
+            iconBg="bg-[#2563EB]/10"
+            title="Historial completo"
+            desc="Consulta y descarga informes anteriores"
+            onClick={() => onNavigate('history')}
+          />
+          <Shortcut
+            icon={<Settings className="w-5 h-5 text-amber-600" />}
+            iconBg="bg-amber-50"
+            title="Configuración"
+            desc="IA, plantillas de informe y preferencias"
+            onClick={() => onNavigate('settings')}
+          />
+        </div>
       </div>
     </div>
   )
 }
 
-// ── Sub-components ─────────────────────────────────────────────────────────
-function StatCard({ icon, label, value, bg }: {
-  icon: React.ReactNode; label: string; value: string; bg: string
-}) {
+// ── Sub-components ──────────────────────────────────────────────────────────
+
+function StatGlass({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bg-white rounded-xl border border-gray-100 shadow-sm px-5 py-4 flex items-center gap-4">
-      <div className={`w-10 h-10 rounded-lg ${bg} flex items-center justify-center shrink-0`}>
-        {icon}
-      </div>
-      <div>
-        <p className="text-2xl font-bold text-[#0F172A]">{value}</p>
-        <p className="text-xs text-[#64748B]">{label}</p>
-      </div>
+    <div className="bg-white/[0.11] backdrop-blur-sm border border-white/10 rounded-2xl px-5 py-4">
+      <p className="text-[1.75rem] font-bold text-white tabular-nums leading-none">{value}</p>
+      <p className="text-blue-200/80 text-[11px] mt-2 font-medium">{label}</p>
     </div>
   )
 }
 
-function QuickAction({ icon, title, desc, onClick, highlight = false }: {
-  icon: React.ReactNode; title: string; desc: string
-  onClick: () => void; highlight?: boolean
+function Shortcut({ icon, iconBg, title, desc, onClick }: {
+  icon: React.ReactNode; iconBg: string; title: string; desc: string; onClick: () => void
 }) {
   return (
     <button
       onClick={onClick}
-      className={`text-left px-5 py-4 rounded-xl border shadow-sm flex items-center gap-4 transition group ${
-        highlight
-          ? 'bg-[#2B58C4] border-[#2B58C4] hover:bg-[#2040A8]'
-          : 'bg-white border-gray-100 hover:border-[#2B58C4]/30 hover:shadow-md'
-      }`}
+      className="group bg-white rounded-2xl border border-slate-100 shadow-sm px-5 py-4
+                 flex items-center gap-4 hover:border-[#2563EB]/20 hover:shadow-md transition text-left"
     >
-      <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
-        highlight ? 'bg-white/20' : 'bg-[#2B58C4]/8'
-      }`}>
-        {highlight
-          ? <FilePlus2 className="w-5 h-5 text-white" />
-          : icon}
+      <div className={`w-10 h-10 rounded-xl ${iconBg} flex items-center justify-center shrink-0`}>
+        {icon}
       </div>
       <div className="flex-1 min-w-0">
-        <p className={`text-sm font-semibold ${highlight ? 'text-white' : 'text-[#0F172A]'}`}>{title}</p>
-        <p className={`text-xs mt-0.5 ${highlight ? 'text-white/70' : 'text-[#64748B]'}`}>{desc}</p>
+        <p className="text-[13px] font-semibold text-[#0F172A]">{title}</p>
+        <p className="text-[11px] text-slate-500 mt-0.5">{desc}</p>
       </div>
-      <ChevronRight className={`w-4 h-4 shrink-0 ${highlight ? 'text-white/60' : 'text-[#94A3B8]'}`} />
+      <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-[#2563EB] transition shrink-0" />
     </button>
   )
 }
 
-// ── Tipos de documento ──────────────────────────────────────────────────────
-export const DOC_TYPES: { label: string; color: string }[] = [
-  { label: 'Demanda',          color: 'bg-red-400' },
-  { label: 'Contestación',     color: 'bg-blue-400' },
-  { label: 'Emplazamiento',    color: 'bg-amber-400' },
-  { label: 'Sentencia',        color: 'bg-purple-400' },
-  { label: 'Auto',             color: 'bg-teal-400' },
-  { label: 'Escrito procesal', color: 'bg-gray-400' },
-]
+function EmptyState({ onNavigate }: { onNavigate: (p: Page) => void }) {
+  return (
+    <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-10 text-center">
+      <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center mx-auto mb-4">
+        <AlertTriangle className="w-5 h-5 text-slate-400" />
+      </div>
+      <p className="text-[13px] font-semibold text-[#0F172A]">Aún no hay análisis</p>
+      <p className="text-[12px] text-slate-400 mt-1">
+        Crea tu primer análisis para verlo reflejado aquí
+      </p>
+      <button
+        onClick={() => onNavigate('new-analysis')}
+        className="mt-5 inline-flex items-center gap-2 px-5 py-2.5 bg-[#2563EB] text-white
+                   text-[12px] font-semibold rounded-xl hover:bg-[#1E3A8A] transition
+                   shadow-md shadow-blue-200"
+      >
+        <FilePlus2 className="w-3.5 h-3.5" />
+        Empezar ahora
+      </button>
+    </div>
+  )
+}

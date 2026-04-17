@@ -9,7 +9,7 @@ import type { User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { DEFAULT_FIELDS } from '../lib/aiDefaults'
 import { generatePdf } from '../lib/generatePdf'
-import type { ExtractionField, ReportConfig } from '../lib/generatePdf'
+import type { ExtractionField, ReportConfig, ExcepcionConfig } from '../lib/generatePdf'
 import { generateWord } from '../lib/generateWord'
 
 // ── Tipos ──────────────────────────────────────────────────────────────────
@@ -59,11 +59,17 @@ function formatDate(iso: string): string {
   }).format(new Date(iso))
 }
 
+function isoToEs(s: string): string {
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](.+))?$/)
+  if (!m) return s
+  return m[4] ? `${m[3]}-${m[2]}-${m[1]} ${m[4]}` : `${m[3]}-${m[2]}-${m[1]}`
+}
+
 function formatValue(val: unknown): string {
   if (val === null || val === undefined) return '—'
   if (Array.isArray(val)) return val.join(' · ')
   if (typeof val === 'number') return val.toLocaleString('es-ES')
-  return String(val)
+  return isoToEs(String(val))
 }
 
 function toArray(val: unknown): string[] {
@@ -258,47 +264,122 @@ function SectionAcciones({ data, onChange }: { data: Record<string, unknown>; on
   )
 }
 
-function SectionExcepcion({ data, onChange }: { data: Record<string, unknown>; onChange: (k: string, v: unknown) => void }) {
+function SectionExcepcion({
+  data,
+  onChange,
+  catalogo = [],
+}: {
+  data: Record<string, unknown>
+  onChange: (k: string, v: unknown) => void
+  catalogo?: ExcepcionConfig[]
+}) {
   const items = toArray(data['excepciones_procesales'])
+
+  // Determina si un nombre de catálogo está activo en la lista actual
+  function isActive(nombre: string) {
+    const n = nombre.trim().toLowerCase()
+    return items.some((i) => i.trim().toLowerCase() === n || i.trim().toLowerCase().includes(n))
+  }
+
+  // Items libres: los que no coinciden con ningún catálogo
+  const customItems = items.filter((item) =>
+    !catalogo.some((c) => {
+      const n = c.nombre.trim().toLowerCase()
+      return item.trim().toLowerCase() === n || item.trim().toLowerCase().includes(n)
+    })
+  )
+
+  function toggleCatalog(nombre: string) {
+    if (isActive(nombre)) {
+      // quitar: elimina el item que coincida
+      const next = items.filter((i) => {
+        const il = i.trim().toLowerCase()
+        const nl = nombre.trim().toLowerCase()
+        return il !== nl && !il.includes(nl)
+      })
+      onChange('excepciones_procesales', next.length ? next : null)
+    } else {
+      // añadir el nombre del catálogo
+      onChange('excepciones_procesales', [...items, nombre])
+    }
+  }
+
+  function updateCustom(newCustom: string[]) {
+    // reconstruye: activos del catálogo + libres nuevos
+    const catalogActivos = catalogo.filter((c) => isActive(c.nombre)).map((c) => c.nombre)
+    const merged = [...catalogActivos, ...newCustom]
+    onChange('excepciones_procesales', merged.length ? merged : null)
+  }
+
   const noHay = items.length === 0
 
   return (
     <div className="space-y-4">
-      {/* Banner informativo */}
+      {/* Banner */}
       <div className="flex items-start gap-3 p-4 rounded-xl bg-red-50 border border-red-100">
         <ShieldAlert className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
         <div>
           <p className="text-xs font-semibold text-red-700 mb-0.5">Sección: Excepción procesal</p>
           <p className="text-[11px] text-red-600 leading-relaxed">
-            Excepciones procesales o materiales alegadas por el demandado: falta de legitimación,
-            cosa juzgada, prescripción, caducidad, inadecuación de procedimiento, etc.
+            Excepciones procesales o materiales alegadas por el demandado. Selecciona del catálogo o añade libremente.
           </p>
         </div>
       </div>
 
-      {/* Toggle sin excepciones */}
-      <button
-        onClick={() => onChange('excepciones_procesales', noHay ? [''] : null)}
-        className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl border text-xs font-semibold transition w-full focus:outline-none ${
-          noHay
-            ? 'bg-green-50 border-green-200 text-green-700 hover:bg-green-100'
-            : 'bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100'
-        }`}
-      >
-        <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${noHay ? 'border-green-500 bg-green-500' : 'border-gray-300'}`}>
-          {noHay && <CheckCircle2 className="w-3 h-3 text-white" />}
+      {/* Catálogo */}
+      {catalogo.length > 0 && (
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-2">Del catálogo configurado</p>
+          <div className="flex flex-wrap gap-2">
+            {catalogo.map((c) => {
+              const active = isActive(c.nombre)
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => toggleCatalog(c.nombre)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition focus:outline-none ${
+                    active
+                      ? 'bg-red-600 border-red-600 text-white'
+                      : 'bg-white border-gray-200 text-gray-600 hover:border-red-300 hover:text-red-600'
+                  }`}
+                >
+                  <ShieldAlert className="w-3 h-3" />
+                  {c.nombre}
+                  {active && <CheckCircle2 className="w-3 h-3" />}
+                </button>
+              )
+            })}
+          </div>
         </div>
-        {noHay ? 'Sin excepciones procesales (marcar para añadir)' : 'No se han alegado excepciones — pulsa para activar'}
-      </button>
+      )}
 
-      {/* Lista editable solo si hay excepciones */}
-      {!noHay && (
+      {/* Toggle sin excepciones / libre */}
+      <div>
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-2">
+          {catalogo.length > 0 ? 'Excepciones personalizadas (texto libre)' : 'Excepciones procesales'}
+        </p>
+        {noHay && catalogo.length === 0 && (
+          <button
+            onClick={() => onChange('excepciones_procesales', [''])}
+            className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl border text-xs font-semibold transition w-full focus:outline-none bg-green-50 border-green-200 text-green-700 hover:bg-green-100"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Añadir excepción
+          </button>
+        )}
         <EditableList
-          items={items}
-          onChange={(newItems) => onChange('excepciones_procesales', newItems.length ? newItems : null)}
+          items={customItems}
+          onChange={updateCustom}
           placeholder="Ej. Prescripción de la acción por transcurso del plazo legal"
           accentColor="#DC2626"
         />
+      </div>
+
+      {/* Estado: sin excepciones */}
+      {noHay && (
+        <p className="text-[11px] text-green-600 italic">
+          Sin excepciones procesales alegadas.
+        </p>
       )}
     </div>
   )
@@ -335,9 +416,10 @@ function EditExpedienteModal({
   const [saving,  setSaving]  = useState(false)
   const [saved,   setSaved]   = useState(false)
   const [error,   setError]   = useState<string | null>(null)
-  const [aiFields,  setAiFields]  = useState<ExtractionField[]>(DEFAULT_FIELDS)
-  const [reportCfg, setReportCfg] = useState<ReportConfig | null>(null)
-  const [genError,  setGenError]  = useState<string | null>(null)
+  const [aiFields,         setAiFields]         = useState<ExtractionField[]>(DEFAULT_FIELDS)
+  const [reportCfg,        setReportCfg]        = useState<ReportConfig | null>(null)
+  const [excepcionesConfig, setExcepcionesConfig] = useState<ExcepcionConfig[]>([])
+  const [genError,         setGenError]         = useState<string | null>(null)
 
   // Carga config del usuario para la generación de informes
   useEffect(() => {
@@ -346,6 +428,9 @@ function EditExpedienteModal({
     })
     supabase.from('report_config').select('*').maybeSingle().then(({ data: d }) => {
       if (d) setReportCfg(d as ReportConfig)
+    })
+    supabase.from('excepciones_procesales').select('id, nombre, texto_asociado').then(({ data: d }) => {
+      if (Array.isArray(d)) setExcepcionesConfig(d as ExcepcionConfig[])
     })
   }, [])
 
@@ -372,11 +457,12 @@ function EditExpedienteModal({
     try {
       const defaultSections = [
         { id: 'portada',     title: 'Portada',                subtitle: '', enabled: true },
-        { id: 'datos',       title: 'Datos del procedimiento',subtitle: '', enabled: true },
-        { id: 'acciones',    title: 'Acciones ejercitadas',   subtitle: '', enabled: true },
+        { id: 'timeline',    title: 'Cronología del asunto',  subtitle: '', enabled: true },
         { id: 'calendario',  title: 'Calendario procesal',    subtitle: '', enabled: true },
+        { id: 'acciones',    title: 'Acciones ejercitadas',   subtitle: '', enabled: true },
         { id: 'excepciones', title: 'Excepciones procesales', subtitle: '', enabled: true },
         { id: 'hechos',      title: 'Hechos controvertidos',  subtitle: '', enabled: true },
+        { id: 'datos',       title: 'Datos adicionales',      subtitle: '', enabled: false },
         { id: 'conclusiones',title: 'Conclusiones',           subtitle: '', enabled: false },
       ]
       const cfg: ReportConfig = reportCfg ?? {
@@ -386,7 +472,7 @@ function EditExpedienteModal({
         primary_color: '#2B58C4', secondary_color: '#F8FAFC',
         font_size: 'normal', sections: defaultSections,
       }
-      generatePdf(data, aiFields, cfg)
+      generatePdf(data, aiFields, cfg, excepcionesConfig)
     } catch {
       setGenError('No se pudo generar el PDF.')
     }
@@ -395,7 +481,7 @@ function EditExpedienteModal({
   async function handleDownloadWord() {
     setGenError(null)
     try {
-      await generateWord(data, aiFields, entry.codigo_aranzadi, reportCfg?.firm_name)
+      await generateWord(data, aiFields, entry.codigo_aranzadi, reportCfg?.firm_name, excepcionesConfig, reportCfg ?? undefined)
     } catch {
       setGenError('No se pudo generar el Word.')
     }
@@ -528,7 +614,7 @@ function EditExpedienteModal({
             {activeSection === 'partes'        && <SectionPartes        data={data} onChange={handleChange} />}
             {activeSection === 'vista'         && <SectionVista         data={data} onChange={handleChange} />}
             {activeSection === 'acciones'      && <SectionAcciones      data={data} onChange={handleChange} />}
-            {activeSection === 'excepcion'     && <SectionExcepcion     data={data} onChange={handleChange} />}
+            {activeSection === 'excepcion'     && <SectionExcepcion     data={data} onChange={handleChange} catalogo={excepcionesConfig} />}
             {activeSection === 'hechos'        && <SectionHechos        data={data} onChange={handleChange} />}
           </div>
         </div>
