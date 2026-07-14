@@ -5,10 +5,11 @@ import LoginPage from './pages/LoginPage'
 import Layout from './components/Layout'
 import DashboardPage from './pages/DashboardPage'
 import NewAnalysisPage from './pages/NewAnalysisPage'
+import NewEscritoPage from './pages/NewEscritoPage'
 import HistoryPage from './pages/HistoryPage'
 import SettingsPage from './pages/SettingsPage'
 
-export type Page = 'dashboard' | 'new-analysis' | 'history' | 'settings'
+export type Page = 'dashboard' | 'new-analysis' | 'new-escrito' | 'history' | 'settings'
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null)
@@ -43,6 +44,7 @@ export default function App() {
     <Layout user={user} currentPage={currentPage} onNavigate={setCurrentPage}>
       {currentPage === 'dashboard'    && <DashboardPage onNavigate={setCurrentPage} />}
       {currentPage === 'new-analysis' && <NewAnalysisPage user={user} />}
+      {currentPage === 'new-escrito'  && <NewEscritoPage user={user} />}
       {currentPage === 'history'      && <HistoryPage user={user} />}
       {currentPage === 'settings'     && <SettingsPage user={user} />}
     </Layout>
