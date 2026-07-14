@@ -1,4 +1,4 @@
-import { FilePlus, History, LogOut, ChevronRight, LayoutDashboard, Settings } from 'lucide-react'
+import { FilePlus, FileText, History, LogOut, ChevronRight, LayoutDashboard, Settings } from 'lucide-react'
 import logo from '../assets/logo.png'
 import { supabase } from '../lib/supabase'
 import type { User } from '@supabase/supabase-js'
@@ -80,6 +80,16 @@ export default function Layout({ user, currentPage, onNavigate, children }: Layo
             label="Historial"
             active={currentPage === 'history'}
             onClick={() => onNavigate('history')}
+          />
+
+          <p className="px-3 mt-4 mb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">
+            Escritos
+          </p>
+          <NavItem
+            icon={<FileText className="w-4 h-4" />}
+            label="Generar escrito"
+            active={currentPage === 'new-escrito'}
+            onClick={() => onNavigate('new-escrito')}
           />
 
           <p className="px-3 mt-4 mb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">

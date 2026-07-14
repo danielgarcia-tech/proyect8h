@@ -6,6 +6,8 @@ import {
   DEFAULT_FIELD_SECTIONS, SPECIAL_LIST_KEYS,
 } from '../lib/generatePdf'
 import type { FieldSections, ExtractionField as PdfExtractionField } from '../lib/generatePdf'
+import { extractTemplateTags } from '../lib/escritoTemplate'
+import type { TemplateField } from '../lib/escritoTemplate'
 import {
   User as UserIcon,
   Building2,
@@ -40,12 +42,14 @@ import {
   Users,
   Calendar,
   Gavel,
+  FileText,
+  UploadCloud,
 } from 'lucide-react'
 
 interface SettingsPageProps { user: User }
 
 // ── Secciones de navegación ────────────────────────────────────────────────
-type Section = 'cuenta' | 'firma' | 'ia' | 'informe' | 'excepciones' | 'analisis' | 'notificaciones'
+type Section = 'cuenta' | 'firma' | 'ia' | 'informe' | 'excepciones' | 'escritos' | 'analisis' | 'notificaciones'
 interface SectionItem { id: Section; label: string; description: string; Icon: React.ElementType }
 
 const SECTIONS: SectionItem[] = [
@@ -54,6 +58,7 @@ const SECTIONS: SectionItem[] = [
   { id: 'ia',             label: 'Inteligencia Artificial',  description: 'Modelo, prompt y extracción JSON',                  Icon: Sparkles },
   { id: 'informe',        label: 'Informe PDF',              description: 'Plantilla, secciones y estilo del PDF',             Icon: FileBarChart2 },
   { id: 'excepciones',    label: 'Excepciones procesales',   description: 'Catálogo de excepciones y su texto en el informe',  Icon: ShieldAlert },
+  { id: 'escritos',       label: 'Escritos',                 description: 'Plantilla de demanda y sus marcadores',             Icon: FileText },
   { id: 'analisis',       label: 'Preferencias',             description: 'Idioma, detalle y formato del informe',             Icon: SlidersHorizontal },
   { id: 'notificaciones', label: 'Notificaciones',           description: 'Alertas y avisos por email',                        Icon: Bell },
 ]
@@ -1250,6 +1255,225 @@ function NotificacionesSection() {
   )
 }
 
+// ── Sección Escritos (plantillas de generación) ────────────────────────────
+const TIPO_ESCRITO_DEMANDA = 'demanda'
+
+const TIPO_CAMPO_OPTIONS: { value: TemplateField['tipo']; label: string }[] = [
+  { value: 'texto',    label: 'Texto corto' },
+  { value: 'textarea', label: 'Texto largo' },
+  { value: 'fecha',    label: 'Fecha' },
+  { value: 'numero',   label: 'Número' },
+]
+
+function TemplateFieldRow({ field, onChange }: {
+  field: TemplateField
+  onChange: (next: TemplateField) => void
+}) {
+  const isList = field.tipo === 'lista'
+  return (
+    <div className="flex items-center gap-3 px-4 py-2.5 bg-white">
+      <code className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded-md w-36 flex-shrink-0 truncate bg-[#EEF2FF] text-[#2B58C4]">
+        {field.key}
+      </code>
+      <input
+        type="text"
+        value={field.label}
+        onChange={(e) => onChange({ ...field, label: e.target.value })}
+        placeholder="Etiqueta del campo"
+        className="flex-1 min-w-0 text-sm px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-800 focus:outline-none focus:ring-2 focus:ring-[#2B58C4]/25 focus:border-[#2B58C4] transition"
+      />
+      {isList ? (
+        <span className="flex-shrink-0 text-[11px] font-semibold text-gray-400 w-32 text-center">Lista de valores</span>
+      ) : (
+        <select
+          value={field.tipo}
+          onChange={(e) => onChange({ ...field, tipo: e.target.value as TemplateField['tipo'] })}
+          className="flex-shrink-0 w-32 text-xs px-2 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#2B58C4]/25 focus:border-[#2B58C4] transition appearance-none cursor-pointer"
+        >
+          {TIPO_CAMPO_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      )}
+      <button role="switch" aria-checked={field.requerido} onClick={() => onChange({ ...field, requerido: !field.requerido })}
+        aria-label={field.requerido ? 'Marcar como opcional' : 'Marcar como obligatorio'}
+        className={`relative flex-shrink-0 w-8 h-4 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-[#2B58C4]/30 ${field.requerido ? 'bg-[#2B58C4]' : 'bg-gray-200'}`}>
+        <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow-sm transition-transform ${field.requerido ? 'translate-x-4' : 'translate-x-0'}`} />
+      </button>
+    </div>
+  )
+}
+
+function EscritosSection({ user }: { user: User }) {
+  const [loading,     setLoading]     = useState(true)
+  const [saving,      setSaving]      = useState(false)
+  const [saved,       setSaved]       = useState(false)
+  const [saveError,   setSaveError]   = useState<string | null>(null)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [uploading,   setUploading]   = useState(false)
+
+  const [plantillaId,   setPlantillaId]   = useState<string | null>(null)
+  const [nombreArchivo, setNombreArchivo] = useState<string | null>(null)
+  const [storagePath,   setStoragePath]   = useState<string | null>(null)
+  const [campos,        setCampos]        = useState<TemplateField[]>([])
+
+  const loadConfig = useCallback(async () => {
+    setLoading(true)
+    const { data } = await supabase
+      .from('instructas_plantillas')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('tipo_escrito', TIPO_ESCRITO_DEMANDA)
+      .maybeSingle()
+
+    if (data) {
+      setPlantillaId(data.id)
+      setNombreArchivo(data.nombre)
+      setStoragePath(data.storage_path)
+      setCampos(Array.isArray(data.campos) ? (data.campos as TemplateField[]) : [])
+    }
+    setLoading(false)
+  }, [user.id])
+
+  useEffect(() => { loadConfig() }, [loadConfig])
+
+  async function handleFileSelected(file: File) {
+    setUploadError(null)
+    setUploading(true)
+    try {
+      const buffer = await file.arrayBuffer()
+      let tags: { key: string; isList: boolean }[]
+      try {
+        tags = extractTemplateTags(buffer)
+      } catch {
+        setUploadError('No se pudo leer el documento. Asegúrate de que es un .docx válido.')
+        return
+      }
+      if (tags.length === 0) {
+        setUploadError('No se detectó ningún marcador {campo} en el documento.')
+        return
+      }
+
+      const path = `${user.id}/${TIPO_ESCRITO_DEMANDA}.docx`
+      const { error: uploadErr } = await supabase.storage
+        .from('instructas-plantillas')
+        .upload(path, file, { upsert: true, contentType: file.type })
+
+      if (uploadErr) {
+        setUploadError('No se pudo subir el archivo a Supabase Storage.')
+        return
+      }
+
+      setCampos((prev) => {
+        const known = new Map(prev.map((c) => [c.key, c]))
+        return tags.map(({ key, isList }): TemplateField => {
+          const existing = known.get(key)
+          if (existing) return existing
+          return { key, label: key, tipo: isList ? 'lista' : 'texto', requerido: false }
+        })
+      })
+      setNombreArchivo(file.name)
+      setStoragePath(path)
+      setSaved(false)
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function handleSave() {
+    if (!storagePath) { setSaveError('Sube primero el documento de plantilla.'); return }
+    setSaving(true)
+    setSaveError(null)
+
+    const payload = {
+      user_id: user.id,
+      tipo_escrito: TIPO_ESCRITO_DEMANDA,
+      nombre: nombreArchivo ?? 'Demanda',
+      storage_path: storagePath,
+      campos,
+      updated_at: new Date().toISOString(),
+    }
+
+    let errMsg: string | null = null
+    if (plantillaId) {
+      const { error } = await supabase.from('instructas_plantillas').update(payload).eq('id', plantillaId)
+      if (error) errMsg = error.message
+    } else {
+      const { data, error } = await supabase.from('instructas_plantillas').insert(payload).select('id').single()
+      if (error) errMsg = error.message
+      else if (data) setPlantillaId(data.id)
+    }
+
+    setSaving(false)
+    if (errMsg) { setSaveError('No se pudo guardar la configuración. Inténtalo de nuevo.'); return }
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2500)
+  }
+
+  function updateField(key: string, next: TemplateField) {
+    setCampos((prev) => prev.map((c) => c.key === key ? next : c))
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <div className="w-6 h-6 rounded-full border-2 border-[#2B58C4]/20 border-t-[#2B58C4] animate-spin" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Plantilla de demanda</p>
+        <p className="text-xs text-gray-400 mb-4 leading-relaxed">
+          Sube el documento .docx de demanda que ya usa el despacho, con los marcadores del caso escritos como{' '}
+          <code className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-mono text-[11px]">{'{demandante}'}</code>
+          {' '}o, para listas, como{' '}
+          <code className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-mono text-[11px]">{'{#hechos}{.}{/hechos}'}</code>.
+          {' '}El texto legal es el vuestro — esta app solo detecta los marcadores y los rellena.
+        </p>
+
+        <label className={`flex items-center gap-3 px-4 py-3.5 rounded-xl border border-dashed cursor-pointer transition ${
+          uploading ? 'border-gray-200 bg-gray-50 cursor-wait' : 'border-[#2B58C4]/40 bg-[#F5F8FF] hover:bg-[#EEF2FF]'
+        }`}>
+          <UploadCloud className="w-5 h-5 text-[#2B58C4] flex-shrink-0" />
+          <span className="flex-1 text-sm text-gray-700">
+            {uploading ? 'Analizando marcadores…' : nombreArchivo ? `Plantilla actual: ${nombreArchivo}` : 'Selecciona un archivo .docx'}
+          </span>
+          <span className="flex-shrink-0 text-xs font-semibold text-[#2B58C4]">{nombreArchivo ? 'Reemplazar' : 'Subir'}</span>
+          <input
+            type="file"
+            accept=".docx"
+            className="hidden"
+            disabled={uploading}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileSelected(f); e.target.value = '' }}
+          />
+        </label>
+
+        {uploadError && <p className="text-xs text-red-500 mt-2">{uploadError}</p>}
+      </div>
+
+      {campos.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+            Campos detectados ({campos.length})
+          </p>
+          <div className="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
+            {campos.map((field) => (
+              <TemplateFieldRow key={field.key} field={field} onChange={(next) => updateField(field.key, next)} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 pt-2">
+        <SaveButton onClick={handleSave} saved={saved} />
+        {saving && <span className="text-xs text-gray-400">Guardando…</span>}
+        {saveError && <span className="text-xs text-red-500">{saveError}</span>}
+      </div>
+    </div>
+  )
+}
+
 // ── Sección Excepciones procesales ─────────────────────────────────────────
 interface ExcepcionRow {
   id: string          // uuid de BD o temporal mientras se crea
@@ -1546,6 +1770,7 @@ export default function SettingsPage({ user }: SettingsPageProps) {
               {activeSection === 'ia'             && <IASection user={user} />}
               {activeSection === 'informe'        && <InformeSection user={user} />}
               {activeSection === 'excepciones'    && <ExcepcionesSection user={user} />}
+              {activeSection === 'escritos'       && <EscritosSection user={user} />}
               {activeSection === 'analisis'       && <AnalisisSection />}
               {activeSection === 'notificaciones' && <NotificacionesSection />}
             </div>
