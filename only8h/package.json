@@ -10,7 +10,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.89.0",
     "@supabase/supabase-js": "^2.103.2",
     "@types/file-saver": "^2.0.7",
     "docx": "^9.6.1",
