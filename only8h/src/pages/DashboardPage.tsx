@@ -56,7 +56,9 @@ export default function DashboardPage({ onNavigate }: Props) {
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
-      if (user?.email) setUserName(user.email.split('@')[0])
+      const fullName = (user?.user_metadata?.full_name as string | undefined)?.trim()
+      if (fullName) setUserName(fullName.split(/\s+/)[0])
+      else if (user?.email) setUserName(user.email.split('@')[0])
     })
     loadData()
   }, [])
