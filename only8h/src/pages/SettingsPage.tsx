@@ -1323,6 +1323,7 @@ function TemplateFieldRow({ field, onChange }: {
 
 interface PlantillaRow {
   id: string
+  userId: string
   categoria: string
   nombre: string
   storagePath: string
@@ -1333,6 +1334,7 @@ interface PlantillaRow {
 function rowFromDb(data: Record<string, unknown>): PlantillaRow {
   return {
     id: data.id as string,
+    userId: data.user_id as string,
     categoria: data.categoria as string,
     nombre: data.nombre as string,
     storagePath: data.storage_path as string,
@@ -1363,9 +1365,10 @@ const DELIMITER_LABEL: Record<DelimiterStyle, string> = {
 
 // ── Fila de plantilla dentro de una categoría ──────────────────────────────
 function PlantillaRowView({
-  plantilla, expanded, onToggleExpand, editCampos, onChangeCampo, onSave, saving, onDelete, deleting,
+  plantilla, isOwner, expanded, onToggleExpand, editCampos, onChangeCampo, onSave, saving, onDelete, deleting,
 }: {
   plantilla: PlantillaRow
+  isOwner: boolean
   expanded: boolean
   onToggleExpand: () => void
   editCampos: TemplateField[]
@@ -1386,17 +1389,23 @@ function PlantillaRowView({
         <span className="flex-shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#EEF2FF] text-[#2B58C4]">
           {plantilla.campos.length} campo{plantilla.campos.length !== 1 ? 's' : ''}
         </span>
-        <button onClick={onToggleExpand}
-          className="flex-shrink-0 text-[11px] font-semibold text-gray-400 hover:text-gray-600 px-2 py-1 rounded-lg hover:bg-gray-50 transition focus:outline-none">
-          {expanded ? 'Cerrar' : 'Editar campos'}
-        </button>
-        <button onClick={onDelete} disabled={deleting} aria-label={`Eliminar ${plantilla.nombre}`}
-          className="flex-shrink-0 p-1.5 text-gray-300 hover:text-red-400 hover:bg-red-50 rounded-lg transition-colors focus:outline-none disabled:opacity-40">
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
+        {isOwner ? (
+          <>
+            <button onClick={onToggleExpand}
+              className="flex-shrink-0 text-[11px] font-semibold text-gray-400 hover:text-gray-600 px-2 py-1 rounded-lg hover:bg-gray-50 transition focus:outline-none">
+              {expanded ? 'Cerrar' : 'Editar campos'}
+            </button>
+            <button onClick={onDelete} disabled={deleting} aria-label={`Eliminar ${plantilla.nombre}`}
+              className="flex-shrink-0 p-1.5 text-gray-300 hover:text-red-400 hover:bg-red-50 rounded-lg transition-colors focus:outline-none disabled:opacity-40">
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </>
+        ) : (
+          <span className="flex-shrink-0 text-[10px] text-gray-300 italic">Compartida</span>
+        )}
       </div>
 
-      {expanded && (
+      {expanded && isOwner && (
         <div className="px-4 pb-4 space-y-3">
           <div className="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
             {editCampos.map((field) => (
@@ -1483,7 +1492,12 @@ function BulkUploadPanel({
       }
       usados.add(slug)
 
-      const existing = existentes.find((p) => p.categoria === categoria && slugify(p.nombre) === slug)
+      // Solo se reutiliza el id si la plantilla existente es propia — con el
+      // catálogo compartido, otro usuario puede tener ya ese mismo slug en
+      // esta categoría, y no debemos tomar el control de su fila.
+      const existing = existentes.find(
+        (p) => p.userId === user.id && p.categoria === categoria && slugify(p.nombre) === slug,
+      )
       const plantillaId = existing?.id ?? crypto.randomUUID()
       const path = `${user.id}/plantillas/${plantillaId}.docx`
 
@@ -1620,14 +1634,13 @@ function EscritosSection({ user }: { user: User }) {
     const { data, error } = await supabase
       .from('instructas_plantillas')
       .select('*')
-      .eq('user_id', user.id)
       .order('categoria', { ascending: true })
       .order('nombre', { ascending: true })
 
     if (error) { setLoadError('No se pudieron cargar las plantillas.'); setLoading(false); return }
     setPlantillas((data ?? []).map(rowFromDb))
     setLoading(false)
-  }, [user.id])
+  }, [])
 
   useEffect(() => { loadPlantillas() }, [loadPlantillas])
 
@@ -1745,6 +1758,7 @@ function EscritosSection({ user }: { user: User }) {
                   <PlantillaRowView
                     key={p.id}
                     plantilla={p}
+                    isOwner={p.userId === user.id}
                     expanded={expandedId === p.id}
                     onToggleExpand={() => toggleExpand(p)}
                     editCampos={editCampos}

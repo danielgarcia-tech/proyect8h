@@ -125,7 +125,6 @@ export default function NewEscritoPage({ user }: { user: User }) {
     const { data } = await supabase
       .from('instructas_plantillas')
       .select('*')
-      .eq('user_id', user.id)
       .order('categoria', { ascending: true })
       .order('nombre', { ascending: true })
 
@@ -139,7 +138,7 @@ export default function NewEscritoPage({ user }: { user: User }) {
     }))
     setPlantillas(rows)
     setLoading(false)
-  }, [user.id])
+  }, [])
 
   useEffect(() => { loadPlantillas() }, [loadPlantillas])
 
