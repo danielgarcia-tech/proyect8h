@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { DEFAULT_FIELDS, DEFAULT_SYSTEM_PROMPT } from '../lib/aiDefaults'
@@ -6,8 +6,8 @@ import {
   DEFAULT_FIELD_SECTIONS, SPECIAL_LIST_KEYS,
 } from '../lib/generatePdf'
 import type { FieldSections, ExtractionField as PdfExtractionField } from '../lib/generatePdf'
-import { extractTemplateTags } from '../lib/escritoTemplate'
-import type { TemplateField } from '../lib/escritoTemplate'
+import { detectTemplateTags, slugify } from '../lib/escritoTemplate'
+import type { TemplateField, DetectedTag, DelimiterStyle } from '../lib/escritoTemplate'
 import {
   User as UserIcon,
   Building2,
@@ -44,6 +44,9 @@ import {
   Gavel,
   FileText,
   UploadCloud,
+  Folder,
+  CheckCircle2,
+  AlertCircle,
 } from 'lucide-react'
 
 interface SettingsPageProps { user: User }
@@ -141,10 +144,10 @@ function Toggle({ checked, onChange, label, description }: {
   )
 }
 
-function SaveButton({ onClick, saved }: { onClick: () => void; saved: boolean }) {
+function SaveButton({ onClick, saved, disabled }: { onClick: () => void; saved: boolean; disabled?: boolean }) {
   return (
-    <button onClick={onClick}
-      className={`flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-xl transition-all focus:outline-none focus:ring-2 focus:ring-[#2B58C4] focus:ring-offset-2 ${
+    <button onClick={onClick} disabled={disabled}
+      className={`flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-xl transition-all focus:outline-none focus:ring-2 focus:ring-[#2B58C4] focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed ${
         saved ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-[#2B58C4] hover:bg-[#2348A8] text-white'
       }`}>
       <Save className="w-4 h-4" />
@@ -1097,9 +1100,26 @@ function CuentaSection({ user }: { user: User }) {
   const [showPass,    setShowPass]    = useState(false)
   const [newPass,     setNewPass]     = useState('')
   const [confirmPass, setConfirmPass] = useState('')
+  const [saving,      setSaving]      = useState(false)
   const [saved,       setSaved]       = useState(false)
+  const [error,       setError]      = useState<string | null>(null)
 
-  function handleSave() { setSaved(true); setTimeout(() => setSaved(false), 2500) }
+  async function handleSave() {
+    setError(null)
+    if (!newPass && !confirmPass) return
+    if (newPass.length < 8) { setError('La contraseña debe tener al menos 8 caracteres.'); return }
+    if (newPass !== confirmPass) { setError('Las contraseñas no coinciden.'); return }
+
+    setSaving(true)
+    const { error: e } = await supabase.auth.updateUser({ password: newPass })
+    setSaving(false)
+
+    if (e) { setError('No se pudo cambiar la contraseña. Inténtalo de nuevo.'); return }
+    setNewPass('')
+    setConfirmPass('')
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2500)
+  }
 
   return (
     <div className="space-y-5">
@@ -1133,8 +1153,9 @@ function CuentaSection({ user }: { user: User }) {
           </div>
         </div>
       </div>
-      <div className="pt-2 flex justify-end">
-        <SaveButton onClick={handleSave} saved={saved} />
+      <div className="pt-2 flex items-center justify-end gap-3">
+        {error && <p className="text-xs text-red-500 flex-1">{error}</p>}
+        <SaveButton onClick={handleSave} saved={saved} disabled={saving || !newPass || !confirmPass} />
       </div>
     </div>
   )
@@ -1256,8 +1277,6 @@ function NotificacionesSection() {
 }
 
 // ── Sección Escritos (plantillas de generación) ────────────────────────────
-const TIPO_ESCRITO_DEMANDA = 'demanda'
-
 const TIPO_CAMPO_OPTIONS: { value: TemplateField['tipo']; label: string }[] = [
   { value: 'texto',    label: 'Texto corto' },
   { value: 'textarea', label: 'Texto largo' },
@@ -1302,114 +1321,364 @@ function TemplateFieldRow({ field, onChange }: {
   )
 }
 
+interface PlantillaRow {
+  id: string
+  categoria: string
+  nombre: string
+  storagePath: string
+  campos: TemplateField[]
+  delimiterStyle: DelimiterStyle
+}
+
+function rowFromDb(data: Record<string, unknown>): PlantillaRow {
+  return {
+    id: data.id as string,
+    categoria: data.categoria as string,
+    nombre: data.nombre as string,
+    storagePath: data.storage_path as string,
+    campos: Array.isArray(data.campos) ? (data.campos as TemplateField[]) : [],
+    delimiterStyle: (data.delimiter_style as DelimiterStyle) ?? 'curly',
+  }
+}
+
+function nombreFromFilename(filename: string): string {
+  return filename.replace(/\.docx$/i, '').replace(/\s*-\s*PLANTILLA\s*$/i, '').trim()
+}
+
+type UploadStatus = 'pendiente' | 'procesando' | 'listo' | 'error'
+
+interface UploadItem {
+  id: string
+  file: File
+  nombre: string
+  status: UploadStatus
+  error?: string
+  detected?: { style: DelimiterStyle; tags: DetectedTag[] }
+}
+
+const DELIMITER_LABEL: Record<DelimiterStyle, string> = {
+  curly: '{campo}',
+  bracket: '[CAMPO]',
+}
+
+// ── Fila de plantilla dentro de una categoría ──────────────────────────────
+function PlantillaRowView({
+  plantilla, expanded, onToggleExpand, editCampos, onChangeCampo, onSave, saving, onDelete, deleting,
+}: {
+  plantilla: PlantillaRow
+  expanded: boolean
+  onToggleExpand: () => void
+  editCampos: TemplateField[]
+  onChangeCampo: (key: string, next: TemplateField) => void
+  onSave: () => void
+  saving: boolean
+  onDelete: () => void
+  deleting: boolean
+}) {
+  return (
+    <div className={expanded ? 'bg-white' : 'bg-white'}>
+      <div className="flex items-center gap-3 px-4 py-3">
+        <FileText className="w-4 h-4 text-gray-300 flex-shrink-0" />
+        <span className="flex-1 text-sm text-gray-800 truncate">{plantilla.nombre}</span>
+        <span className="flex-shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-100 text-gray-400">
+          {DELIMITER_LABEL[plantilla.delimiterStyle]}
+        </span>
+        <span className="flex-shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#EEF2FF] text-[#2B58C4]">
+          {plantilla.campos.length} campo{plantilla.campos.length !== 1 ? 's' : ''}
+        </span>
+        <button onClick={onToggleExpand}
+          className="flex-shrink-0 text-[11px] font-semibold text-gray-400 hover:text-gray-600 px-2 py-1 rounded-lg hover:bg-gray-50 transition focus:outline-none">
+          {expanded ? 'Cerrar' : 'Editar campos'}
+        </button>
+        <button onClick={onDelete} disabled={deleting} aria-label={`Eliminar ${plantilla.nombre}`}
+          className="flex-shrink-0 p-1.5 text-gray-300 hover:text-red-400 hover:bg-red-50 rounded-lg transition-colors focus:outline-none disabled:opacity-40">
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-3">
+          <div className="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
+            {editCampos.map((field) => (
+              <TemplateFieldRow key={field.key} field={field} onChange={(next) => onChangeCampo(field.key, next)} />
+            ))}
+          </div>
+          <div className="flex justify-end">
+            <SaveButton onClick={onSave} saved={false} disabled={saving} />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Panel de subida múltiple ────────────────────────────────────────────────
+function BulkUploadPanel({
+  user, categoriasExistentes, existentes, onSaved, onClose,
+}: {
+  user: User
+  categoriasExistentes: string[]
+  existentes: PlantillaRow[]
+  onSaved: () => void
+  onClose: () => void
+}) {
+  const [categoriaDestino, setCategoriaDestino] = useState(categoriasExistentes[0] ?? '')
+  const [nuevaCategoria,   setNuevaCategoria]   = useState('')
+  const [items,            setItems]            = useState<UploadItem[]>([])
+  const [savingBatch,      setSavingBatch]       = useState(false)
+  const [batchError,       setBatchError]        = useState<string | null>(null)
+
+  const categoria = (nuevaCategoria.trim() || categoriaDestino).trim()
+  const listos = items.filter((i) => i.status === 'listo' && i.detected)
+
+  async function handleFilesSelected(fileList: FileList) {
+    const nuevos: UploadItem[] = Array.from(fileList).map((file) => ({
+      id: `${Date.now()}-${Math.random()}`,
+      file,
+      nombre: nombreFromFilename(file.name),
+      status: 'pendiente',
+    }))
+    setItems((prev) => [...prev, ...nuevos])
+
+    for (const item of nuevos) {
+      setItems((prev) => prev.map((i) => i.id === item.id ? { ...i, status: 'procesando' } : i))
+      try {
+        const buffer = await item.file.arrayBuffer()
+        const { style, tags } = detectTemplateTags(buffer)
+        if (tags.length === 0) {
+          setItems((prev) => prev.map((i) => i.id === item.id
+            ? { ...i, status: 'error', error: 'No se detectó ningún marcador {campo} o [CAMPO].' } : i))
+          continue
+        }
+        setItems((prev) => prev.map((i) => i.id === item.id ? { ...i, status: 'listo', detected: { style, tags } } : i))
+      } catch {
+        setItems((prev) => prev.map((i) => i.id === item.id
+          ? { ...i, status: 'error', error: 'No se pudo leer el archivo. ¿Es un .docx válido?' } : i))
+      }
+    }
+  }
+
+  function removeItem(id: string) {
+    setItems((prev) => prev.filter((i) => i.id !== id))
+  }
+
+  async function saveBatch() {
+    setBatchError(null)
+    if (!categoria) { setBatchError('Elige o crea una categoría.'); return }
+    if (listos.length === 0) { setBatchError('No hay plantillas listas para guardar.'); return }
+
+    setSavingBatch(true)
+
+    const usados = new Set(
+      existentes.filter((p) => p.categoria === categoria).map((p) => slugify(p.nombre))
+    )
+    let anyError = false
+
+    for (const item of listos) {
+      let slug = slugify(item.nombre)
+      if (usados.has(slug)) {
+        let n = 2
+        while (usados.has(`${slug}_${n}`)) n += 1
+        slug = `${slug}_${n}`
+      }
+      usados.add(slug)
+
+      const existing = existentes.find((p) => p.categoria === categoria && slugify(p.nombre) === slug)
+      const plantillaId = existing?.id ?? crypto.randomUUID()
+      const path = `${user.id}/plantillas/${plantillaId}.docx`
+
+      const { error: uploadErr } = await supabase.storage
+        .from('instructas-plantillas')
+        .upload(path, item.file, { upsert: true, contentType: item.file.type })
+
+      if (uploadErr) {
+        anyError = true
+        setItems((prev) => prev.map((i) => i.id === item.id ? { ...i, status: 'error', error: 'No se pudo subir a Storage.' } : i))
+        continue
+      }
+
+      const campos: TemplateField[] = item.detected!.tags.map((t) => ({
+        key: t.key,
+        rawTag: t.rawTag,
+        label: t.rawTag,
+        tipo: t.isList ? 'lista' : 'texto',
+        requerido: false,
+      }))
+
+      const { error: dbErr } = await supabase.from('instructas_plantillas').upsert({
+        id: plantillaId,
+        user_id: user.id,
+        categoria,
+        plantilla_slug: slug,
+        nombre: item.nombre,
+        storage_path: path,
+        campos,
+        delimiter_style: item.detected!.style,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'id' })
+
+      if (dbErr) {
+        anyError = true
+        setItems((prev) => prev.map((i) => i.id === item.id ? { ...i, status: 'error', error: 'No se pudo guardar en la base de datos.' } : i))
+      }
+    }
+
+    setSavingBatch(false)
+    if (anyError) { setBatchError('Alguna plantilla no se pudo guardar — revisa los errores marcados en rojo.'); return }
+    onSaved()
+  }
+
+  return (
+    <div className="rounded-2xl border border-[#C7D7F5] bg-[#F5F8FF] p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold text-[#2B58C4] uppercase tracking-wider">Añadir plantillas</p>
+        <button onClick={onClose} className="p-1 text-gray-400 hover:text-gray-600 rounded-lg focus:outline-none">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <FieldLabel htmlFor="bulk-categoria">Categoría existente</FieldLabel>
+          <SelectInput id="bulk-categoria" value={categoriaDestino} onChange={setCategoriaDestino}
+            options={[
+              { value: '', label: categoriasExistentes.length ? 'Elige una categoría…' : 'Aún no hay categorías' },
+              ...categoriasExistentes.map((c) => ({ value: c, label: c })),
+            ]} />
+        </div>
+        <div>
+          <FieldLabel htmlFor="bulk-nueva-categoria">…o nueva categoría</FieldLabel>
+          <TextInput id="bulk-nueva-categoria" value={nuevaCategoria} onChange={setNuevaCategoria}
+            placeholder="Ej. Recursos de apelación" />
+        </div>
+      </div>
+
+      <label className="flex items-center gap-3 px-4 py-3.5 rounded-xl border border-dashed border-[#2B58C4]/40 bg-white hover:bg-[#EEF2FF] cursor-pointer transition">
+        <UploadCloud className="w-5 h-5 text-[#2B58C4] flex-shrink-0" />
+        <span className="flex-1 text-sm text-gray-700">Selecciona uno o varios archivos .docx</span>
+        <span className="flex-shrink-0 text-xs font-semibold text-[#2B58C4]">Elegir archivos</span>
+        <input type="file" accept=".docx" multiple className="hidden"
+          onChange={(e) => { if (e.target.files?.length) handleFilesSelected(e.target.files); e.target.value = '' }} />
+      </label>
+
+      {items.length > 0 && (
+        <div className="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden bg-white">
+          {items.map((item) => (
+            <div key={item.id} className="flex items-center gap-3 px-4 py-2.5">
+              {item.status === 'procesando' && (
+                <div className="w-3.5 h-3.5 rounded-full border-2 border-gray-200 border-t-[#2B58C4] animate-spin flex-shrink-0" />
+              )}
+              {item.status === 'listo' && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />}
+              {item.status === 'error' && <AlertCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />}
+              {item.status === 'pendiente' && <div className="w-3.5 h-3.5 rounded-full bg-gray-200 flex-shrink-0" />}
+
+              <span className="flex-1 text-xs text-gray-700 truncate">{item.nombre}</span>
+
+              {item.detected && (
+                <span className="flex-shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-100 text-gray-400">
+                  {DELIMITER_LABEL[item.detected.style]} · {item.detected.tags.length} campos
+                </span>
+              )}
+              {item.error && <span className="flex-shrink-0 text-[10px] text-red-500">{item.error}</span>}
+
+              <button onClick={() => removeItem(item.id)} aria-label={`Quitar ${item.nombre}`}
+                className="flex-shrink-0 p-1 text-gray-300 hover:text-red-400 rounded-lg transition-colors focus:outline-none">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {batchError && <p className="text-xs text-red-500">{batchError}</p>}
+
+      <div className="flex justify-end">
+        <button onClick={saveBatch} disabled={savingBatch || listos.length === 0}
+          className="flex items-center gap-2 px-5 py-2.5 bg-[#2B58C4] hover:bg-[#2348A8] disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-xl transition-colors focus:outline-none focus:ring-2 focus:ring-[#2B58C4] focus:ring-offset-2">
+          {savingBatch ? 'Guardando…' : `Guardar ${listos.length || ''} plantilla${listos.length === 1 ? '' : 's'}`.trim()}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function EscritosSection({ user }: { user: User }) {
-  const [loading,     setLoading]     = useState(true)
-  const [saving,      setSaving]      = useState(false)
-  const [saved,       setSaved]       = useState(false)
-  const [saveError,   setSaveError]   = useState<string | null>(null)
-  const [uploadError, setUploadError] = useState<string | null>(null)
-  const [uploading,   setUploading]   = useState(false)
+  const [loading,    setLoading]    = useState(true)
+  const [loadError,  setLoadError]  = useState<string | null>(null)
+  const [plantillas, setPlantillas] = useState<PlantillaRow[]>([])
 
-  const [plantillaId,   setPlantillaId]   = useState<string | null>(null)
-  const [nombreArchivo, setNombreArchivo] = useState<string | null>(null)
-  const [storagePath,   setStoragePath]   = useState<string | null>(null)
-  const [campos,        setCampos]        = useState<TemplateField[]>([])
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [editCampos, setEditCampos] = useState<TemplateField[]>([])
+  const [savingId,   setSavingId]   = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
-  const loadConfig = useCallback(async () => {
+  const [showUpload, setShowUpload] = useState(false)
+
+  const loadPlantillas = useCallback(async () => {
     setLoading(true)
-    const { data } = await supabase
+    setLoadError(null)
+    const { data, error } = await supabase
       .from('instructas_plantillas')
       .select('*')
       .eq('user_id', user.id)
-      .eq('tipo_escrito', TIPO_ESCRITO_DEMANDA)
-      .maybeSingle()
+      .order('categoria', { ascending: true })
+      .order('nombre', { ascending: true })
 
-    if (data) {
-      setPlantillaId(data.id)
-      setNombreArchivo(data.nombre)
-      setStoragePath(data.storage_path)
-      setCampos(Array.isArray(data.campos) ? (data.campos as TemplateField[]) : [])
-    }
+    if (error) { setLoadError('No se pudieron cargar las plantillas.'); setLoading(false); return }
+    setPlantillas((data ?? []).map(rowFromDb))
     setLoading(false)
   }, [user.id])
 
-  useEffect(() => { loadConfig() }, [loadConfig])
+  useEffect(() => { loadPlantillas() }, [loadPlantillas])
 
-  async function handleFileSelected(file: File) {
-    setUploadError(null)
-    setUploading(true)
-    try {
-      const buffer = await file.arrayBuffer()
-      let tags: { key: string; isList: boolean }[]
-      try {
-        tags = extractTemplateTags(buffer)
-      } catch {
-        setUploadError('No se pudo leer el documento. Asegúrate de que es un .docx válido.')
-        return
-      }
-      if (tags.length === 0) {
-        setUploadError('No se detectó ningún marcador {campo} en el documento.')
-        return
-      }
-
-      const path = `${user.id}/${TIPO_ESCRITO_DEMANDA}.docx`
-      const { error: uploadErr } = await supabase.storage
-        .from('instructas-plantillas')
-        .upload(path, file, { upsert: true, contentType: file.type })
-
-      if (uploadErr) {
-        setUploadError('No se pudo subir el archivo a Supabase Storage.')
-        return
-      }
-
-      setCampos((prev) => {
-        const known = new Map(prev.map((c) => [c.key, c]))
-        return tags.map(({ key, isList }): TemplateField => {
-          const existing = known.get(key)
-          if (existing) return existing
-          return { key, label: key, tipo: isList ? 'lista' : 'texto', requerido: false }
-        })
-      })
-      setNombreArchivo(file.name)
-      setStoragePath(path)
-      setSaved(false)
-    } finally {
-      setUploading(false)
+  const categorias = useMemo(() => {
+    const map = new Map<string, PlantillaRow[]>()
+    for (const p of plantillas) {
+      const list = map.get(p.categoria) ?? []
+      list.push(p)
+      map.set(p.categoria, list)
     }
+    return Array.from(map.entries())
+  }, [plantillas])
+
+  const categoriasExistentes = useMemo(
+    () => Array.from(new Set(plantillas.map((p) => p.categoria))).sort(),
+    [plantillas],
+  )
+
+  function toggleExpand(p: PlantillaRow) {
+    if (expandedId === p.id) { setExpandedId(null); return }
+    setExpandedId(p.id)
+    setEditCampos(p.campos)
   }
 
-  async function handleSave() {
-    if (!storagePath) { setSaveError('Sube primero el documento de plantilla.'); return }
-    setSaving(true)
-    setSaveError(null)
-
-    const payload = {
-      user_id: user.id,
-      tipo_escrito: TIPO_ESCRITO_DEMANDA,
-      nombre: nombreArchivo ?? 'Demanda',
-      storage_path: storagePath,
-      campos,
-      updated_at: new Date().toISOString(),
-    }
-
-    let errMsg: string | null = null
-    if (plantillaId) {
-      const { error } = await supabase.from('instructas_plantillas').update(payload).eq('id', plantillaId)
-      if (error) errMsg = error.message
-    } else {
-      const { data, error } = await supabase.from('instructas_plantillas').insert(payload).select('id').single()
-      if (error) errMsg = error.message
-      else if (data) setPlantillaId(data.id)
-    }
-
-    setSaving(false)
-    if (errMsg) { setSaveError('No se pudo guardar la configuración. Inténtalo de nuevo.'); return }
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2500)
+  function changeEditCampo(key: string, next: TemplateField) {
+    setEditCampos((prev) => prev.map((c) => c.key === key ? next : c))
   }
 
-  function updateField(key: string, next: TemplateField) {
-    setCampos((prev) => prev.map((c) => c.key === key ? next : c))
+  async function saveCampos(id: string) {
+    setSavingId(id)
+    const { error } = await supabase.from('instructas_plantillas')
+      .update({ campos: editCampos, updated_at: new Date().toISOString() })
+      .eq('id', id)
+    setSavingId(null)
+    if (error) return
+    setPlantillas((prev) => prev.map((p) => p.id === id ? { ...p, campos: editCampos } : p))
+    setExpandedId(null)
+  }
+
+  async function deletePlantilla(p: PlantillaRow) {
+    const ok = window.confirm(
+      `¿Eliminar "${p.nombre}"? También se borrará el historial de escritos generados con esta plantilla. Esta acción no se puede deshacer.`,
+    )
+    if (!ok) return
+
+    setDeletingId(p.id)
+    await supabase.storage.from('instructas-plantillas').remove([p.storagePath])
+    const { error } = await supabase.from('instructas_plantillas').delete().eq('id', p.id)
+    setDeletingId(null)
+    if (error) return
+    setPlantillas((prev) => prev.filter((x) => x.id !== p.id))
   }
 
   if (loading) {
@@ -1422,54 +1691,75 @@ function EscritosSection({ user }: { user: User }) {
 
   return (
     <div className="space-y-6">
-      <div>
-        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Plantilla de demanda</p>
-        <p className="text-xs text-gray-400 mb-4 leading-relaxed">
-          Sube el documento .docx de demanda que ya usa el despacho, con los marcadores del caso escritos como{' '}
+      <div className="flex items-start justify-between gap-4">
+        <p className="text-xs text-gray-400 leading-relaxed max-w-md">
+          Sube los .docx de escritos del despacho con los marcadores del caso escritos como{' '}
           <code className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-mono text-[11px]">{'{demandante}'}</code>
-          {' '}o, para listas, como{' '}
-          <code className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-mono text-[11px]">{'{#hechos}{.}{/hechos}'}</code>.
+          {' '}o{' '}
+          <code className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 font-mono text-[11px]">{'[DEMANDANTE]'}</code>.
           {' '}El texto legal es el vuestro — esta app solo detecta los marcadores y los rellena.
         </p>
-
-        <label className={`flex items-center gap-3 px-4 py-3.5 rounded-xl border border-dashed cursor-pointer transition ${
-          uploading ? 'border-gray-200 bg-gray-50 cursor-wait' : 'border-[#2B58C4]/40 bg-[#F5F8FF] hover:bg-[#EEF2FF]'
-        }`}>
-          <UploadCloud className="w-5 h-5 text-[#2B58C4] flex-shrink-0" />
-          <span className="flex-1 text-sm text-gray-700">
-            {uploading ? 'Analizando marcadores…' : nombreArchivo ? `Plantilla actual: ${nombreArchivo}` : 'Selecciona un archivo .docx'}
-          </span>
-          <span className="flex-shrink-0 text-xs font-semibold text-[#2B58C4]">{nombreArchivo ? 'Reemplazar' : 'Subir'}</span>
-          <input
-            type="file"
-            accept=".docx"
-            className="hidden"
-            disabled={uploading}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileSelected(f); e.target.value = '' }}
-          />
-        </label>
-
-        {uploadError && <p className="text-xs text-red-500 mt-2">{uploadError}</p>}
+        {!showUpload && (
+          <button onClick={() => setShowUpload(true)}
+            className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2 bg-[#2B58C4] hover:bg-[#2348A8] text-white text-xs font-semibold rounded-xl transition focus:outline-none focus:ring-2 focus:ring-[#2B58C4] focus:ring-offset-1">
+            <Plus className="w-3.5 h-3.5" /> Añadir plantillas
+          </button>
+        )}
       </div>
 
-      {campos.length > 0 && (
-        <div>
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-            Campos detectados ({campos.length})
-          </p>
-          <div className="rounded-xl border border-gray-200 divide-y divide-gray-100 overflow-hidden">
-            {campos.map((field) => (
-              <TemplateFieldRow key={field.key} field={field} onChange={(next) => updateField(field.key, next)} />
-            ))}
-          </div>
-        </div>
+      {loadError && <p className="text-xs text-red-500">{loadError}</p>}
+
+      {showUpload && (
+        <BulkUploadPanel
+          user={user}
+          categoriasExistentes={categoriasExistentes}
+          existentes={plantillas}
+          onClose={() => setShowUpload(false)}
+          onSaved={async () => { setShowUpload(false); await loadPlantillas() }}
+        />
       )}
 
-      <div className="flex items-center gap-3 pt-2">
-        <SaveButton onClick={handleSave} saved={saved} />
-        {saving && <span className="text-xs text-gray-400">Guardando…</span>}
-        {saveError && <span className="text-xs text-red-500">{saveError}</span>}
-      </div>
+      {categorias.length === 0 ? (
+        <div className="flex flex-col items-center text-center py-12 px-4">
+          <div className="w-12 h-12 rounded-xl bg-[#EEF2FF] flex items-center justify-center mb-4">
+            <Folder className="w-6 h-6 text-[#2B58C4]" />
+          </div>
+          <h3 className="text-base font-bold text-gray-900 mb-1.5">Aún no hay plantillas</h3>
+          <p className="text-sm text-gray-400 max-w-sm">
+            Usa "Añadir plantillas" para subir los .docx de escritos del despacho, agrupados por categoría.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {categorias.map(([categoria, items]) => (
+            <div key={categoria} className="rounded-xl border border-gray-200 overflow-hidden">
+              <div className="flex items-center gap-2 px-4 py-2.5 bg-gray-50 border-b border-gray-100">
+                <Folder className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                <p className="text-xs font-bold text-gray-600 flex-1 truncate">{categoria}</p>
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-gray-200 text-gray-500">
+                  {items.length}
+                </span>
+              </div>
+              <div className="divide-y divide-gray-50">
+                {items.map((p) => (
+                  <PlantillaRowView
+                    key={p.id}
+                    plantilla={p}
+                    expanded={expandedId === p.id}
+                    onToggleExpand={() => toggleExpand(p)}
+                    editCampos={editCampos}
+                    onChangeCampo={changeEditCampo}
+                    onSave={() => saveCampos(p.id)}
+                    saving={savingId === p.id}
+                    onDelete={() => deletePlantilla(p)}
+                    deleting={deletingId === p.id}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
